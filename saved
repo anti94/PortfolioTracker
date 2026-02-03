@@ -1,0 +1,490 @@
+
+# portfolio_app.py
+# Run:
+#   pip install streamlit pandas requests beautifulsoup4 lxml
+#   streamlit run portfolio_app.py
+#
+# What this does:
+# - Editable "Assets" + "Debts" tables (like your Excel)
+# - Pulls FX + gold prices using Truncgil JSON API (primary) + optional fallbacks
+# - Shows "Kur (TL)" (unit price) and auto-calculates "Tutar (TL)=Kur*Adet"
+# - You can manually type "Kur (TL)" ONLY when auto price is missing (or if you want to override).
+#
+# Primary API:
+#   https://finans.truncgil.com/v4/today.json
+# - Time comes from: Update_Date
+# - Uses: Buying values
+#
+# Mappings (AUTO):
+#   USD   -> "Amerikan Doları" (Buying)
+#   EUR   -> "Euro" (Buying)
+#   GRAM  -> "GRAMALTIN" (Buying)
+#   CEYREK-> "CEYREKALTIN" (Buying)
+#   YARIM -> "YARIMALTIN" (Buying)
+#   ATA   -> "ATAALTIN" (Buying)
+
+from __future__ import annotations
+
+import json
+import time
+import datetime as dt
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import streamlit as st
+
+APP_TITLE = "Varlık & Borç Takip — Dinamik Kur/Altın"
+DEFAULT_STATE_FILE = "bilanco_caglayan_hesap.json"
+
+# ----------------------------
+# Storage
+# ----------------------------
+
+def load_state(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        st.warning(f"State dosyası okunamadı: {e}")
+        return {}
+
+
+def save_state(path: str, payload: dict) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"State kaydedilemedi: {e}")
+
+
+# ----------------------------
+# Pricing
+# ----------------------------
+
+@dataclass
+class PriceSnapshot:
+    prices_try: Dict[str, float]      # key -> TRY unit price
+    fetched_at: dt.datetime
+    source: str
+    notes: str = ""
+
+
+def _to_float_tr(s: str) -> Optional[float]:
+    """Converts strings like '7.609,50' to float."""
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+
+    s = "".join(ch for ch in s if ch.isdigit() or ch in ".,-")
+    if not s or s in {".", ",", "-", "-.", "-,"}:
+        return None
+
+    # TR style: 7.609,50
+    if "." in s and "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s and "." not in s:
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except:
+        return None
+
+
+def _parse_update_date(s: str) -> dt.datetime:
+    """
+    Truncgil Update_Date varies; parse robustly.
+    Examples: "2026-01-28 21:03:00", "2026-01-28 21:03"
+    """
+    if not s:
+        return dt.datetime.now()
+
+    s = str(s).strip()
+    fmts = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ]
+    for f in fmts:
+        try:
+            return dt.datetime.strptime(s, f)
+        except:
+            pass
+    return dt.datetime.now()
+
+
+def fetch_from_truncgil_today_json(timeout_s: int = 10) -> Optional[PriceSnapshot]:
+    """
+    Primary source: https://finans.truncgil.com/v4/today.json
+    Uses Buying values and Update_Date for timestamp.
+    """
+    url = "https://finans.truncgil.com/v4/today.json"
+    headers = {"User-Agent": "Mozilla/5.0 (portfolio-tracker)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=timeout_s)
+        r.raise_for_status()
+        data = r.json()
+
+        update_date = data.get("Update_Date") or data.get("UpdateDate") or data.get("update_date")
+        fetched_at = _parse_update_date(update_date)
+
+        mapping = {
+            "USDTRY": "USD",
+            "EURTRY": "EUR",
+            "GRAM": "GRA",
+            "CEYREK": "CEYREKALTIN",
+            "YARIM": "YARIMALTIN",
+            "ATA": "ATAALTIN",
+            "BILEZIK": "YIA",
+        }
+
+        prices: Dict[str, float] = {}
+
+        for key, trunc_key in mapping.items():
+            item = data.get(trunc_key)
+            buying = _to_float_tr(item.get("Buying")) if isinstance(item, dict) else None
+            if buying is None:
+                continue
+
+            # Keep compatibility with BUY/SELL selection: set both to Buying
+            if key in {"USDTRY", "EURTRY"}:
+                prices[f"{key}_BUY"] = buying
+                prices[f"{key}_SELL"] = buying
+            else:
+                prices[f"{key}_BUY"] = buying
+                prices[f"{key}_SELL"] = buying
+
+        if not prices:
+            return None
+
+        return PriceSnapshot(
+            prices_try=prices,
+            fetched_at=fetched_at,
+            source=url,
+            notes="Kaynak: Truncgil today.json (Buying). Zaman: Update_Date."
+        )
+    except Exception:
+        return None
+
+
+# Optional fallback(s)
+def fetch_from_harem_gecmis_kurlar(timeout_s: int = 10) -> Optional[PriceSnapshot]:
+    url = "https://www.haremaltin.com/gecmis-kurlar"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (portfolio-tracker)",
+        "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=timeout_s)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "lxml")
+        rows = soup.find_all("tr")
+        prices = {}
+
+        for tr in rows:
+            tds = [td.get_text(" ", strip=True) for td in tr.find_all(["td", "th"])]
+            if len(tds) < 4:
+                continue
+            code = tds[0].strip().upper()
+            if code in {"USDTRY", "EURTRY"}:
+                buy = _to_float_tr(tds[2])
+                if buy is not None:
+                    prices[f"{code}_BUY"] = buy
+                    prices[f"{code}_SELL"] = buy
+
+        if not prices:
+            return None
+
+        return PriceSnapshot(
+            prices_try=prices,
+            fetched_at=dt.datetime.now(),
+            source=url,
+            notes="Fallback: Harem Altın (Buying'e yakın)."
+        )
+    except Exception:
+        return None
+
+
+def fetch_prices(timeout_s: int = 10) -> PriceSnapshot:
+    sources = []
+    notes = []
+    merged: Dict[str, float] = {}
+    fetched_at = dt.datetime.now()
+
+    snap = fetch_from_truncgil_today_json(timeout_s=timeout_s)
+    if snap:
+        merged.update(snap.prices_try)
+        fetched_at = snap.fetched_at
+        sources.append(snap.source)
+        notes.append(snap.notes)
+
+    if not merged:
+        snap2 = fetch_from_harem_gecmis_kurlar(timeout_s=timeout_s)
+        if snap2:
+            merged.update(snap2.prices_try)
+            fetched_at = snap2.fetched_at
+            sources.append(snap2.source)
+            notes.append(snap2.notes)
+
+    if not merged:
+        return PriceSnapshot(
+            prices_try={},
+            fetched_at=fetched_at,
+            source="N/A",
+            notes="Fiyatlar çekilemedi. İnternet/engelleme olabilir. 'Kur (TL)' alanına manuel yazabilirsin."
+        )
+
+    return PriceSnapshot(
+        prices_try=merged,
+        fetched_at=fetched_at,
+        source=" + ".join(sources),
+        notes=" | ".join(notes),
+    )
+
+
+# ----------------------------
+# App defaults
+# ----------------------------
+
+DEFAULT_ASSETS = pd.DataFrame(
+    [
+        {"Varlık Türü": "Banka (TL)", "Kod": "TRY", "Adet": 400000.0, "Kur (TL)": 1.0, "Not": ""},
+        {"Varlık Türü": "Euro", "Kod": "EUR", "Adet": 600.0, "Kur (TL)": None, "Not": ""},
+        {"Varlık Türü": "Ata Altın", "Kod": "ATA", "Adet": 24.0, "Kur (TL)": None, "Not": ""},
+        {"Varlık Türü": "22-ayar-bilezik", "Kod": "BILEZIK", "Adet": 5 * 10, "Kur (TL)": None, "Not": "22-ayar-bilezik otomatik yok, kur (TL) manuel giriniz"},
+        {"Varlık Türü": "Çeyrek", "Kod": "CEYREK", "Adet": 1.0, "Kur (TL)": None, "Not": ""},
+        {"Varlık Türü": "Gram Altın", "Kod": "GRAM", "Adet": 4.5, "Kur (TL)": None, "Not": "Gram altın kur degeri otomatik bulunamadi, kur (TL) manuel giriniz"},
+        {"Varlık Türü": "Çeyrek", "Kod": "CEYREK", "Adet": 7.0, "Kur (TL)": None, "Not": ""},
+        {"Varlık Türü": "Yarım", "Kod": "YARIM", "Adet": 1.0, "Kur (TL)": None, "Not": ""},
+        {"Varlık Türü": "Dolar", "Kod": "USD", "Adet": 0.0, "Kur (TL)": None, "Not": ""},
+    ]
+)
+
+DEFAULT_DEBTS = pd.DataFrame(
+    [
+        {"Borç Adı": "Kredi Kartı", "Tutar (TL)": 130000.0, "Not": ""},
+    ]
+)
+
+AUTO_PRICE_KEY = {
+    "USD": ("USDTRY_BUY", "USDTRY_SELL"),
+    "EUR": ("EURTRY_BUY", "EURTRY_SELL"),
+    "GRAM": ("GRAM_BUY", "GRAM_SELL"),
+    "CEYREK": ("CEYREK_BUY", "CEYREK_SELL"),
+    "YARIM": ("YARIM_BUY", "YARIM_SELL"),
+    "ATA": ("ATA_BUY", "ATA_SELL"),
+    "BILEZIK": ("BILEZIK_BUY", "BILEZIK_SELL"),
+}
+
+
+# ----------------------------
+# Computation
+# ----------------------------
+
+def get_auto_unit_price(code: str, prices: Dict[str, float], use_side: str) -> Optional[float]:
+    code = str(code or "").strip().upper()
+    if code == "TRY":
+        return 1.0
+    pair = AUTO_PRICE_KEY.get(code)
+    if not pair:
+        return None
+    buy_key, sell_key = pair
+    key = sell_key if use_side == "SELL" else buy_key
+    return prices.get(key)
+
+
+def compute_display_assets(assets_df: pd.DataFrame, prices: Dict[str, float], use_side: str) -> pd.DataFrame:
+    df = assets_df.copy()
+
+    kur_list = []
+    tutar_list = []
+
+    for _, row in df.iterrows():
+        code = row.get("Kod", "")
+        qty = row.get("Adet", 0.0)
+        manual_kur = row.get("Kur (TL)", None)
+
+        auto_kur = get_auto_unit_price(code, prices, use_side)
+        kur = auto_kur if auto_kur is not None else manual_kur
+
+        kur_list.append(kur)
+
+        try:
+            q = float(qty) if qty is not None else 0.0
+            k = float(kur) if kur is not None else 0.0
+            tutar_list.append(q * k)
+        except:
+            tutar_list.append(0.0)
+
+    df["Kur (TL)"] = kur_list
+    df["Tutar (TL)"] = tutar_list
+    return df
+
+
+def compute_totals(assets_display: pd.DataFrame, debts_df: pd.DataFrame) -> Tuple[float, float, float]:
+    total_assets = float(assets_display["Tutar (TL)"].fillna(0).sum()) if "Tutar (TL)" in assets_display.columns else 0.0
+    total_debts = float(debts_df["Tutar (TL)"].fillna(0).sum()) if "Tutar (TL)" in debts_df.columns else 0.0
+    return total_assets, total_debts, total_assets - total_debts
+
+
+# ----------------------------
+# UI
+# ----------------------------
+
+st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.title(APP_TITLE)
+
+st.sidebar.header("Ayarlar")
+state_path = st.sidebar.text_input("Kayıt dosyası", value=DEFAULT_STATE_FILE)
+
+refresh_sec = st.sidebar.number_input("Oto yenileme (sn) — 0 kapalı", min_value=0, max_value=3600, value=60, step=10)
+use_side = st.sidebar.selectbox("Fiyat türü", options=["BUY", "SELL"], index=0,
+                                help="Bu sürüm BUY (Buying) kullanır. SELL de aynı değere eşit tutuluyor.")
+timeout_s = st.sidebar.slider("Fiyat çekme timeout (sn)", min_value=3, max_value=30, value=10)
+
+colA, colB = st.sidebar.columns(2)
+if colA.button("Fiyatları Güncelle"):
+    st.session_state["force_refresh_prices"] = True
+if colB.button("Bilançoyu Yükle"):
+    st.session_state["force_reload_state"] = True
+
+# Init session
+if "assets_df" not in st.session_state:
+    st.session_state["assets_df"] = DEFAULT_ASSETS.copy()
+if "debts_df" not in st.session_state:
+    st.session_state["debts_df"] = DEFAULT_DEBTS.copy()
+if "prices_snap" not in st.session_state:
+    st.session_state["prices_snap"] = PriceSnapshot(prices_try={}, fetched_at=dt.datetime.now(), source="N/A")
+
+# Reload state
+if st.session_state.get("force_reload_state"):
+    saved = load_state(state_path)
+    if "assets" in saved:
+        st.session_state["assets_df"] = pd.DataFrame(saved["assets"])
+    if "debts" in saved:
+        st.session_state["debts_df"] = pd.DataFrame(saved["debts"])
+    st.session_state["force_reload_state"] = False
+    st.toast("State yüklendi.")
+
+@st.cache_data(ttl=60)
+def cached_prices(timeout_s: int) -> PriceSnapshot:
+    return fetch_prices(timeout_s=timeout_s)
+
+do_refresh = st.session_state.get("force_refresh_prices", False)
+
+if refresh_sec and refresh_sec > 0:
+    st.caption(f"Oto yenileme açık: {refresh_sec} sn")
+    st.session_state["_last_tick"] = st.session_state.get("_last_tick", time.time())
+    if time.time() - st.session_state["_last_tick"] >= refresh_sec:
+        do_refresh = True
+        st.session_state["_last_tick"] = time.time()
+
+if do_refresh:
+    snap = fetch_prices(timeout_s=timeout_s)
+    st.session_state["prices_snap"] = snap
+    st.session_state["force_refresh_prices"] = False
+else:
+    st.session_state["prices_snap"] = cached_prices(timeout_s=timeout_s)
+
+snap: PriceSnapshot = st.session_state["prices_snap"]
+# Fiyat Kaynağı ve Mevcut Fiyatlar
+left, right = st.columns([1.25, 1])
+
+with right:
+    st.subheader("Fiyat Kaynağı")
+    st.write(f"**Update_Date:** {snap.fetched_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.write(f"**Kaynak:** {snap.source}")
+    if snap.notes:
+        st.info(snap.notes)
+
+    st.subheader("Mevcut Fiyatlar (TRY) — Buying")
+    if snap.prices_try:
+        dfp = pd.DataFrame([{"Kod": k, "TRY": v} for k, v in sorted(snap.prices_try.items())])
+        st.dataframe(dfp, use_container_width=True, height=340)
+    else:
+        st.warning("Fiyatlar boş. İnternet veya site engeli olabilir. 'Kur (TL)' alanına manuel yazabilirsin.")
+
+with left:
+    st.subheader("Varlıklar")
+    st.caption("Kod: TRY, USD, EUR, GRAM, CEYREK, YARIM, ATA, bilezik. "
+               "Otomatik fiyat varsa 'Kur (TL)' dolar; yoksa manuel girebilirsin. "
+               "'Tutar (TL)' otomatik = Kur * Adet.")
+
+    display_df = compute_display_assets(st.session_state["assets_df"], snap.prices_try, use_side=use_side)
+
+    edited = st.data_editor(
+        display_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "Adet": st.column_config.NumberColumn(step=0.1),
+            "Kur (TL)": st.column_config.NumberColumn(step=1.0, help="Otomatik yoksa manuel gir. Otomatik varsa üstüne yazar."),
+            "Tutar (TL)": st.column_config.NumberColumn(help="Otomatik: Kur * Adet"),
+            "Kod": st.column_config.TextColumn(help="TRY, USD, EUR, GRAM, CEYREK, YARIM, ATA, BILEZIK"),
+            "Kur (TL)": st.column_config.NumberColumn(
+                format="%.4f",
+                step=0.0001
+            ),
+            "Tutar (TL)": st.column_config.NumberColumn(
+                format="%.2f",
+                step=1.0
+)
+
+        },
+        disabled=["Tutar (TL)"],
+        key="assets_editor",
+
+        
+    )
+
+    keep_cols = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Not"]
+    for c in keep_cols:
+        if c not in edited.columns:
+            edited[c] = None
+    st.session_state["assets_df"] = edited[keep_cols].copy()
+
+    st.subheader("Borçlar")
+    debts_df = st.data_editor(
+        st.session_state["debts_df"],
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={"Tutar (TL)": st.column_config.NumberColumn(step=10.0)},
+        key="debts_editor",
+    )
+    st.session_state["debts_df"] = debts_df
+
+    display_df2 = compute_display_assets(st.session_state["assets_df"], snap.prices_try, use_side=use_side)
+    total_assets, total_debts, net = compute_totals(display_df2, debts_df)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Toplam Varlık (TL)", f"{total_assets:,.2f}")
+    m2.metric("Toplam Borç (TL)", f"{total_debts:,.2f}")
+    m3.metric("Net (TL)", f"{net:,.2f}")
+
+    st.divider()
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    if c1.button("Bilançoyu Kaydet"):
+        payload = {
+            "assets": st.session_state["assets_df"].to_dict(orient="records"),
+            "debts": debts_df.to_dict(orient="records"),
+            "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        save_state(state_path, payload)
+        st.success("Kaydedildi.")
+
+    csv_assets = display_df2.to_csv(index=False).encode("utf-8-sig")
+    csv_debts = debts_df.to_csv(index=False).encode("utf-8-sig")
+    c2.download_button("Varlıkları CSV indir", data=csv_assets, file_name="varliklar.csv", mime="text/csv")
+    c2.download_button("Borçları CSV indir", data=csv_debts, file_name="borclar.csv", mime="text/csv")
+    c3.caption("CSV'yi Excel'e atabilirsin. Varlıklar CSV'sinde Kur ve Tutar hesaplı gelir.")

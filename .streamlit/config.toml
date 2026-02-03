@@ -1,0 +1,12 @@
+[theme]
+base = "light"
+
+primaryColor = "#111827"              # Koyu gri (vurgu)
+
+backgroundColor = "#ffffff"           # Beyaz sayfa
+
+secondaryBackgroundColor = "#e5e7eb"  # TABLO + SIDEBAR zemini (koyu gri)
+
+textColor = "#111827"                 # Koyu gri yazı
+
+font = "sans serif"

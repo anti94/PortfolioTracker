@@ -15,6 +15,7 @@ class PriceSnapshot:
     fetched_at: dt.datetime
     source: str
     notes: str = ""
+    raw_data: Optional[Dict[str, object]] = None
 
 
 def _to_float_tr(s: str) -> Optional[float]:
@@ -77,24 +78,57 @@ def _fetch_truncgil(url: str, timeout_s: int) -> Optional[PriceSnapshot]:
         update_date = data.get("Update_Date") or data.get("UpdateDate") or data.get("update_date")
         fetched_at = _parse_update_date(update_date)
 
-        mapping = {
-            "USDTRY": "USD",
-            "EURTRY": "EUR",
-            "GRAM": "GRA",
-            "CEYREK": "CEYREKALTIN",
-            "YARIM": "YARIMALTIN",
-            "ATA": "ATAALTIN",
-            "BILEZIK": "YIA",
+        mapping_candidates = {
+            "USD": ["USD", "USDTRY", "DOLAR", "DOLARTL"],
+            "EUR": ["EUR", "EURTRY", "EURO", "EUROTL"],
+            "GRAM": ["GRAM", "GRA", "GRAMALTIN"],
+            "CEYREK": ["CEYREK", "CEYREKALTIN"],
+            "YARIM": ["YARIM", "YARIMALTIN"],
+            "ATA": ["ATA", "ATAALTIN"],
+            "BILEZIK": ["BILEZIK", "YIA", "BILEZIKALTIN"],
         }
 
+        def find_item(candidates: list[str]) -> Optional[dict]:
+            for key in candidates:
+                if key in data and isinstance(data.get(key), dict):
+                    return data.get(key)
+            # Fallback: contains match
+            candidates_lower = [c.lower() for c in candidates]
+            for k, v in data.items():
+                if not isinstance(v, dict):
+                    continue
+                kl = str(k).lower()
+                if any(c in kl for c in candidates_lower):
+                    return v
+            return None
+
+        def extract_buy_sell(item: dict) -> tuple[Optional[float], Optional[float]]:
+            # Try common key variants (case-insensitive, Turkish variants)
+            keys = {str(k).strip().lower(): v for k, v in item.items()}
+            buy_keys = ["buying", "buy", "alis", "alış", "alisfiyati", "alışfiyati", "fiyat"]
+            sell_keys = ["selling", "sell", "satis", "satış", "satisfiyati", "satışfiyati"]
+            buying = None
+            selling = None
+            for k in buy_keys:
+                if k in keys:
+                    buying = _to_float_tr(keys[k])
+                    break
+            for k in sell_keys:
+                if k in keys:
+                    selling = _to_float_tr(keys[k])
+                    break
+            return buying, selling
+
         prices: Dict[str, float] = {}
-        for key, trunc_key in mapping.items():
-            item = data.get(trunc_key)
-            buying = _to_float_tr(item.get("Buying")) if isinstance(item, dict) else None
+        for code, candidates in mapping_candidates.items():
+            item = find_item(candidates)
+            if not isinstance(item, dict):
+                continue
+            buying, selling = extract_buy_sell(item)
             if buying is None:
                 continue
-            prices[f"{key}_BUY"] = buying
-            prices[f"{key}_SELL"] = buying
+            prices[f"{code}_BUY"] = buying
+            prices[f"{code}_SELL"] = selling if selling is not None else buying
 
         if not prices:
             return None
@@ -103,7 +137,8 @@ def _fetch_truncgil(url: str, timeout_s: int) -> Optional[PriceSnapshot]:
             prices_try=prices,
             fetched_at=fetched_at,
             source=url,
-            notes="Kaynak: Truncgil today.json (Buying). Zaman: Update_Date.",
+            notes="Kaynak: Truncgil today.json. Zaman: Update_Date.",
+            raw_data=data,
         )
     except Exception:
         return None

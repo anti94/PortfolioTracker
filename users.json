@@ -1,0 +1,14 @@
+{
+  "users": {
+    "cgulucan": {
+      "salt": "X/VHaUhcQ2l7iRp61YMQiw==",
+      "hash": "C7A7ntqufpUnSjervbo0h+R8u77bT/NtvOFFAvokHJ0=",
+      "role": "admin"
+    },
+    "caglar": {
+      "salt": "ac4QERh5oQgH98PJJ8E+1Q==",
+      "hash": "kcz0Rmea5PyPWoQ9YD2muf6//bBK2LvQB+osO9gB1Rk=",
+      "role": "user"
+    }
+  }
+}

@@ -7,8 +7,10 @@ from app_constants import BASELINE_DATE, BASELINE_NET
 
 def ensure_baseline_net(session_state: Dict) -> None:
     nh: List[dict] = session_state.get("net_history", [])
-    if not any(r.get("date") == BASELINE_DATE for r in nh):
-        nh.append({"date": BASELINE_DATE, "net": BASELINE_NET})
+    baseline_date = session_state.get("baseline_date", BASELINE_DATE)
+    baseline_net = session_state.get("baseline_net", BASELINE_NET)
+    if not any(r.get("date") == baseline_date for r in nh):
+        nh.append({"date": baseline_date, "net": baseline_net})
         nh.sort(key=lambda x: x.get("date", ""))
         session_state["net_history"] = nh
 

@@ -1,0 +1,80 @@
+{
+  "assets": [
+    {
+      "Varlık Türü": "Mevduat Hesabı",
+      "Kod": "TRY",
+      "Adet": 90000.0,
+      "Kur (TL)": 1.0,
+      "Yıllık Faiz (%)": 41.0,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Euro",
+      "Kod": "EUR",
+      "Adet": 600.0,
+      "Kur (TL)": 51.3117,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Dolar",
+      "Kod": "USD",
+      "Adet": 0.0,
+      "Kur (TL)": 43.4748,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Ata Altın",
+      "Kod": "ATA",
+      "Adet": 26.0,
+      "Kur (TL)": 48620.04,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "22-ayar-bilezik",
+      "Kod": "BILEZIK",
+      "Adet": 50.0,
+      "Kur (TL)": 6718.41,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Gram Altın",
+      "Kod": "GRAM",
+      "Adet": 4.5,
+      "Kur (TL)": 6877.61,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Çeyrek",
+      "Kod": "CEYREK",
+      "Adet": 8.0,
+      "Kur (TL)": 11786.68,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    },
+    {
+      "Varlık Türü": "Yarım",
+      "Kod": "YARIM",
+      "Adet": 1.0,
+      "Kur (TL)": 23499.69,
+      "Yıllık Faiz (%)": NaN,
+      "Not": ""
+    }
+  ],
+  "debts": [
+    {
+      "Borç Adı": "",
+      "Tutar (TL)": NaN,
+      "Not": ""
+    }
+  ],
+  "cashflow_base_date": "2026-01-31",
+  "baseline_date": "2026-01-28",
+  "baseline_net": 2000000.0,
+  "interest_last_date": "2026-02-03",
+  "saved_at": "2026-02-03T22:13:35"
+}

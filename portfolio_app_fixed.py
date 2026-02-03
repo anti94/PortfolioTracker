@@ -2,17 +2,160 @@ from __future__ import annotations
 
 import time
 import datetime as dt
+import os
+import re
 
 import pandas as pd
 import streamlit as st
 
 from app_compute import compute_display_assets, compute_totals
-from app_constants import APP_TITLE, ASSET_COLS, DEBT_COLS, DEFAULT_STATE_FILE, STATE_FILE
-from app_defaults import DEFAULT_ASSETS, DEFAULT_DEBTS
+from app_constants import APP_TITLE, ASSET_COLS, DEBT_COLS, BASELINE_DATE, BASELINE_NET
+from app_auth import (
+    create_user,
+    delete_user,
+    get_user_role,
+    is_valid_username,
+    load_users,
+    save_users,
+    update_password,
+    verify_user,
+)
 from app_excel import build_bilanco_xlsx
 from app_net_history import ensure_baseline_net, get_net_for, upsert_net_snapshot
 from app_pricing import PriceSnapshot, fetch_prices
 from app_storage import load_state_from_json, save_state, save_state_to_json
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+
+def _parse_rate_percent(value: str) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return 0.0
+    match = re.search(r"[-+]?\d*\.?\d+", text)
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(0))
+    except Exception:
+        return 0.0
+
+
+def _normalize_asset_codes(assets_df: pd.DataFrame) -> pd.DataFrame:
+    type_to_code = {
+        "mevduat hesabı": "TRY",
+        "banka (tl)": "TRY",
+        "tl": "TRY",
+        "euro": "EUR",
+        "dolar": "USD",
+        "usd": "USD",
+        "eur": "EUR",
+        "gram altın": "GRAM",
+        "gram altin": "GRAM",
+        "çeyrek": "CEYREK",
+        "ceyrek": "CEYREK",
+        "yarım": "YARIM",
+        "yarim": "YARIM",
+        "ata altın": "ATA",
+        "ata altin": "ATA",
+        "22-ayar-bilezik": "BILEZIK",
+        "bilezik": "BILEZIK",
+    }
+    df = assets_df.copy()
+    for idx, row in df.iterrows():
+        asset_type = str(row.get("Varlık Türü", "")).strip().lower()
+        if asset_type == "banka (tl)":
+            df.at[idx, "Varlık Türü"] = "Mevduat Hesabı"
+            asset_type = "mevduat hesabı"
+        code = type_to_code.get(asset_type)
+        if code:
+            df.at[idx, "Kod"] = code
+    return df
+
+
+def _asset_group_from_code(code: str) -> str:
+    code = str(code or "").strip().upper()
+    if code in {"TRY"}:
+        return "TL HESABI"
+    if code in {"USD", "EUR"}:
+        return "DÖVİZ HESABI"
+    if code in {"GRAM", "CEYREK", "YARIM", "ATA", "BILEZIK"}:
+        return "ALTIN HESABI"
+    return "TL HESABI"
+
+
+
+
+def apply_daily_deposit_interest(assets_df: pd.DataFrame) -> pd.DataFrame:
+    now = dt.datetime.now()
+    effective_date = now.date()
+    if now.hour < 6:
+        effective_date = effective_date - dt.timedelta(days=1)
+
+    last_date_str = st.session_state.get("interest_last_date")
+    if not last_date_str:
+        st.session_state["interest_last_date"] = effective_date.isoformat()
+        return assets_df
+
+    try:
+        last_date = dt.date.fromisoformat(last_date_str)
+    except Exception:
+        last_date = effective_date
+
+    if effective_date <= last_date:
+        return assets_df
+
+    days = (effective_date - last_date).days
+    if days <= 0:
+        return assets_df
+
+    df = assets_df.copy()
+    for idx, row in df.iterrows():
+        if str(row.get("Varlık Türü", "")).strip().lower() != "mevduat hesabı":
+            continue
+        annual_rate = _parse_rate_percent(row.get("Yıllık Faiz (%)", ""))
+        if annual_rate <= 0:
+            continue
+        net_daily_rate = (annual_rate / 100.0) / 365.0 * (1.0 - 0.175)
+        try:
+            principal = float(row.get("Adet", 0.0) or 0.0)
+        except Exception:
+            principal = 0.0
+        if principal <= 0:
+            continue
+        df.at[idx, "Adet"] = principal * ((1.0 + net_daily_rate) ** days)
+
+    st.session_state["interest_last_date"] = effective_date.isoformat()
+    return df
+
+
+def _load_remembered_credentials(path: str) -> tuple[str, str]:
+    if not os.path.exists(path):
+        return "", ""
+    try:
+        import json
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", "")).strip()
+        return username, password
+    except Exception:
+        return "", ""
+
+
+def _save_remembered_credentials(path: str, username: str, password: str) -> None:
+    import json
+    if not username:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"username": username, "password": password}, f, ensure_ascii=False, indent=2)
 
 
 # ----------------------------
@@ -23,42 +166,135 @@ from app_storage import load_state_from_json, save_state, save_state_to_json
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
+# ----------------------------
+# Auth
+# ----------------------------
+
+st.session_state.setdefault("auth", {"logged_in": False, "username": None, "role": "user"})
+users_data = load_users("users.json")
+remember_path = os.path.join("user_data", "_remember.json")
+
+if not st.session_state["auth"]["logged_in"]:
+    login_tab, signup_tab = st.tabs(["Giriş", "Kayıt Ol"])
+
+    with login_tab:
+        st.subheader("Giriş")
+        with st.form("login_form"):
+            remembered_username, remembered_password = _load_remembered_credentials(remember_path)
+            username = st.text_input("Kullanıcı adı", value=remembered_username)
+            password = st.text_input("Şifre", type="password", value=remembered_password)
+            remember_me = st.checkbox("Beni hatırla", value=bool(remembered_username))
+            submitted = st.form_submit_button("Giriş Yap")
+
+        if submitted:
+            username_clean = username.strip()
+            if verify_user(users_data, username_clean, password):
+                st.session_state["auth"] = {
+                    "logged_in": True,
+                    "username": username_clean,
+                    "role": get_user_role(users_data, username_clean),
+                }
+                if remember_me:
+                    _save_remembered_credentials(remember_path, username_clean, password)
+                else:
+                    _save_remembered_credentials(remember_path, "", "")
+                st.success("Giriş başarılı.")
+                st.rerun()
+            else:
+                st.error("Kullanıcı adı veya şifre hatalı.")
+
+    with signup_tab:
+        st.subheader("Kayıt Ol")
+        with st.form("signup_form"):
+            new_username = st.text_input("Kullanıcı adı (3-32 karakter)")
+            new_password = st.text_input("Şifre (en az 6 karakter)", type="password")
+            new_password2 = st.text_input("Şifre (tekrar)", type="password")
+            submitted_signup = st.form_submit_button("Kayıt Ol")
+
+        if submitted_signup:
+            if new_password != new_password2:
+                st.error("Şifreler eşleşmiyor.")
+            else:
+                ok, msg = create_user(users_data, new_username, new_password, role="user")
+                if ok:
+                    save_users(users_data, "users.json")
+                    st.success("Kayıt başarılı. Şimdi giriş yapabilirsiniz.")
+                else:
+                    st.error(msg)
+
+    st.stop()
+
+username = st.session_state["auth"]["username"]
+role = st.session_state["auth"]["role"]
+user_dir = os.path.join("user_data", username)
+os.makedirs(user_dir, exist_ok=True)
+state_path = os.path.join(user_dir, "state.json")
+
+# If user has no personal state yet, try to migrate legacy global state
+legacy_state_path = "portfolio_state.json"
+if not os.path.exists(state_path) and os.path.exists(legacy_state_path):
+    legacy_data = load_state_from_json(legacy_state_path)
+    if legacy_data:
+        save_state(state_path, legacy_data)
+
 # Sidebar controls FIRST (so reruns see flags)
 st.sidebar.header("Ayarlar")
-state_path = st.sidebar.text_input("Kayıt dosyası", value=DEFAULT_STATE_FILE)
+st.sidebar.text_input("Kayıt dosyası", value=state_path, disabled=True)
 refresh_sec = st.sidebar.number_input("Oto yenileme (sn) — 0 kapalı", min_value=0, max_value=3600, value=60, step=10)
-use_side = st.sidebar.selectbox(
-    "Fiyat türü",
-    options=["BUY", "SELL"],
-    index=0,
-    help="Bu sürüm BUY (Buying) kullanır. SELL de aynı değere eşit tutuluyor."
-)
+use_side = "BUY"
 timeout_s = st.sidebar.slider("Fiyat çekme timeout (sn)", min_value=3, max_value=30, value=10)
 
 # --- Nonce for cache busting (important)
 st.session_state.setdefault("prices_nonce", 0)
 
 st.sidebar.divider()
-if st.sidebar.button("Fiyatları Güncelle"):
-    # Force bypass cache: bump nonce + clear cache + set flag
-    st.session_state["prices_nonce"] += 1
-    st.session_state["force_refresh_prices"] = True
-    try:
-        cached_prices.clear()
-    except Exception:
-        pass
+st.sidebar.caption(f"Kullanıcı: {username} ({role})")
 
-if st.sidebar.button("Bilanço Son Durumu Json'dan Yükle"):
-    st.session_state["force_reload_state"] = True
-if st.sidebar.button("Bilançoyu Kaydet"):
-    st.session_state["force_save_state"] = True
+
+if role == "admin":
+    st.sidebar.subheader("Admin Panel")
+    with st.sidebar.expander("Kullanıcı Ekle / Güncelle", expanded=False):
+        admin_new_username = st.text_input("Kullanıcı adı", key="admin_new_username")
+        admin_new_password = st.text_input("Şifre", type="password", key="admin_new_password")
+        admin_role = st.selectbox("Rol", options=["user", "admin"], key="admin_new_role")
+        if st.button("Kullanıcı Ekle", key="admin_add_user"):
+            ok, msg = create_user(users_data, admin_new_username, admin_new_password, role=admin_role)
+            if ok:
+                save_users(users_data, "users.json")
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    with st.sidebar.expander("Şifre Değiştir", expanded=False):
+        target_user = st.text_input("Kullanıcı adı", key="admin_pw_user")
+        new_pw = st.text_input("Yeni şifre", type="password", key="admin_pw_new")
+        if st.button("Şifreyi Güncelle", key="admin_pw_update"):
+            ok, msg = update_password(users_data, target_user, new_pw)
+            if ok:
+                save_users(users_data, "users.json")
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    with st.sidebar.expander("Kullanıcı Sil", expanded=False):
+        delete_user_name = st.text_input("Kullanıcı adı", key="admin_delete_user")
+        if st.button("Kullanıcıyı Sil", key="admin_delete_user_btn"):
+            if delete_user_name == username:
+                st.error("Kendi hesabınızı silemezsiniz.")
+            else:
+                ok, msg = delete_user(users_data, delete_user_name)
+                if ok:
+                    save_users(users_data, "users.json")
+                    st.success(msg)
+                else:
+                    st.error(msg)
 
 
 # =========================
 # Force Load / Save handlers
 # =========================
 if st.session_state.get("force_reload_state"):
-    data = load_state_from_json(STATE_FILE)
+    data = load_state_from_json(state_path)
     if data:
         assets = pd.DataFrame(data.get("assets", []))
         debts  = pd.DataFrame(data.get("debts", []))
@@ -66,8 +302,14 @@ if st.session_state.get("force_reload_state"):
         # kolon fix
         for c in ASSET_COLS:
             if c not in assets.columns:
-                assets[c] = "" if c in ("Varlık Türü", "Kod", "Not") else 0.0
+                if c == "Kod":
+                    assets[c] = "TRY"
+                elif c in ("Varlık Türü", "Not"):
+                    assets[c] = ""
+                else:
+                    assets[c] = 0.0
         assets = assets[ASSET_COLS]
+        assets = _normalize_asset_codes(assets)
 
         for c in DEBT_COLS:
             if c not in debts.columns:
@@ -89,7 +331,7 @@ if st.session_state.get("force_reload_state"):
     st.rerun()
 
 if st.session_state.get("force_save_state"):
-    save_state_to_json(STATE_FILE, st.session_state)
+    save_state_to_json(state_path, st.session_state)
     st.sidebar.success("Bilanço Durumu JSON'a kaydedildi.")
     st.session_state["force_save_state"] = False
 
@@ -100,22 +342,46 @@ st.sidebar.divider()
 # Init session (FROM JSON)
 # =========================
 if "initialized" not in st.session_state:
-    data = load_state_from_json(STATE_FILE)
+    data = load_state_from_json(state_path)
 
     if data:
         assets = pd.DataFrame(data.get("assets", []))
         debts  = pd.DataFrame(data.get("debts", []))
         st.session_state["cashflow_base_date"] = data.get("cashflow_base_date", dt.date.today().isoformat())
+        st.session_state["baseline_date"] = data.get("baseline_date", BASELINE_DATE)
+        st.session_state["baseline_net"] = data.get("baseline_net", BASELINE_NET)
+        st.session_state["interest_last_date"] = data.get("interest_last_date")
     else:
-        assets = DEFAULT_ASSETS.copy()
-        debts  = DEFAULT_DEBTS.copy()
-        st.session_state["cashflow_base_date"] = dt.date.today().isoformat()
+        assets = pd.DataFrame([{
+            "Varlık Türü": "Mevduat Hesabı",
+            "Kod": "TRY",
+            "Adet": 0.0,
+            "Kur (TL)": 0.0,
+            "Yıllık Faiz (%)": 0.0,
+            "Not": "",
+        }], columns=ASSET_COLS)
+        debts  = pd.DataFrame([{
+            "Borç Adı": "",
+            "Tutar (TL)": 0.0,
+            "Not": "",
+        }], columns=DEBT_COLS)
+        today_iso = dt.date.today().isoformat()
+        st.session_state["baseline_date"] = today_iso
+        st.session_state["baseline_net"] = 0.0
+        st.session_state["cashflow_base_date"] = today_iso
+        st.session_state["interest_last_date"] = today_iso
 
     # kolonları garanti altına al
     for c in ASSET_COLS:
         if c not in assets.columns:
-            assets[c] = "" if c in ("Varlık Türü", "Kod", "Not") else 0.0
+            if c == "Kod":
+                assets[c] = "TRY"
+            elif c in ("Varlık Türü", "Not"):
+                assets[c] = ""
+            else:
+                assets[c] = 0.0
     assets = assets[ASSET_COLS]
+    assets = _normalize_asset_codes(assets)
 
     for c in DEBT_COLS:
         if c not in debts.columns:
@@ -132,10 +398,15 @@ if "initialized" not in st.session_state:
 
     st.session_state["initialized"] = True
 
+    # İlk girişte kullanıcı dosyasını oluştur
+    if not os.path.exists(state_path):
+        save_state_to_json(state_path, st.session_state)
+
 
 st.session_state.setdefault("prices_snap", PriceSnapshot(prices_try={}, fetched_at=dt.datetime.now(), source="N/A"))
 st.session_state.setdefault("net_history", [])
-st.session_state.setdefault("cashflow_base_date", "2026-01-28")  # varsayılan baseline
+st.session_state.setdefault("cashflow_base_date", st.session_state.get("baseline_date", BASELINE_DATE))
+st.session_state.setdefault("interest_last_date", dt.date.today().isoformat())
 
 
 @st.cache_data(ttl=60)
@@ -169,22 +440,46 @@ snap: PriceSnapshot = st.session_state["prices_snap"]
 
 
 # ----------------------------
-# Assets table
+# Assets tables (3 groups)
 # ----------------------------
 
 st.subheader("Varlıklar")
-st.caption("Kod: TRY, USD, EUR, GRAM, CEYREK, YARIM, ATA, BILEZIK. 'Tutar (TL)' otomatik = Kur * Adet.")
+st.caption("Tutar otomatik = Kur * Adet.")
 
-display_df_assets = compute_display_assets(
-    st.session_state["assets_df"],
-    snap.prices_try,
-    use_side=use_side
-)
+# Günlük faiz işletimi (Mevduat hesabı)
+st.session_state["assets_df"] = apply_daily_deposit_interest(st.session_state["assets_df"])
+st.session_state["assets_df"] = _normalize_asset_codes(st.session_state["assets_df"])
 
-assets_col, _empty = st.columns([1, 1])   # %50 tablo, %50 boş
-with assets_col:
-    edited_assets = st.data_editor(
-        display_df_assets,
+assets_df_base = st.session_state["assets_df"].copy()
+assets_df_base["__group__"] = assets_df_base["Kod"].apply(_asset_group_from_code)
+
+groups = [
+    ("TL HESABI", "TL HESABI", "info"),
+    ("DÖVİZ HESABI", "DÖVİZ HESABI", "success"),
+    ("ALTIN HESABI", "ALTIN HESABI", "warning"),
+]
+
+display_cols_assets_tl = ["Varlık Türü", "Adet", "Kur (TL)", "Yıllık Faiz (%)", "Tutar (TL)", "Not"]
+display_cols_assets_other = ["Varlık Türü", "Adet", "Kur (TL)", "Tutar (TL)", "Not"]
+keep_cols_assets = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Yıllık Faiz (%)", "Not"]
+
+edited_groups = []
+for group_key, group_label, group_style in groups:
+    if group_style == "info":
+        st.info(group_label)
+    elif group_style == "success":
+        st.success(group_label)
+    else:
+        st.warning(group_label)
+    group_df = assets_df_base[assets_df_base["__group__"] == group_key].copy()
+    display_df = compute_display_assets(group_df, snap.prices_try, use_side=use_side)
+
+    display_cols = display_cols_assets_tl if group_key == "TL HESABI" else display_cols_assets_other
+    for col in display_cols:
+        if col not in display_df.columns:
+            display_df[col] = None
+    edited = st.data_editor(
+        display_df[display_cols],
         use_container_width=True,
         num_rows="dynamic",
         column_config={
@@ -194,30 +489,33 @@ with assets_col:
                 step=0.0001,
                 help="Otomatik varsa üstüne yazar; otomatik yoksa manuel gir."
             ),
+            "Yıllık Faiz (%)": st.column_config.NumberColumn(
+                format="%.2f",
+                step=0.1,
+                help="Mevduat hesabı için yıllık faiz oranı (ör. 41)."
+            ),
             "Tutar (TL)": st.column_config.NumberColumn(
                 format="%.2f",
                 step=1.0,
                 help="Otomatik: Kur * Adet"
             ),
-            "Kod": st.column_config.TextColumn(help="TRY, USD, EUR, GRAM, CEYREK, YARIM, ATA, BILEZIK"),
         },
         disabled=["Tutar (TL)"],
-        key="assets_editor",
+        key=f"assets_editor_{group_key}",
     )
 
-keep_cols_assets = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Not"]
-for c in keep_cols_assets:
-    if c not in edited_assets.columns:
-        edited_assets[c] = None
-st.session_state["assets_df"] = edited_assets[keep_cols_assets].copy()
+    for c in keep_cols_assets:
+        if c not in edited.columns:
+            edited[c] = None
+    edited_groups.append(edited[keep_cols_assets].copy())
 
-st.divider()
+st.session_state["assets_df"] = _normalize_asset_codes(pd.concat(edited_groups, ignore_index=True))
 
 # ----------------------------
 # Debts table
 # ----------------------------
 
-st.subheader("Borçlar")
+st.error("BORÇLAR")
 debts_col, _empty2 = st.columns([1, 1])  # %50 tablo, %50 boş
 with debts_col:
     debts_df = st.data_editor(
@@ -324,21 +622,59 @@ with cf_col:
 # ----------------------------
 
 st.divider()
-st.subheader("Fiyat Kaynağı")
 st.write(f"**Update_Date:** {snap.fetched_at.strftime('%Y-%m-%d %H:%M:%S')}")
-st.write(f"**Kaynak:** {snap.source}")
-if snap.notes:
-    st.info(snap.notes)
-
-st.subheader("Mevcut Fiyatlar (TRY) — Buying")
+st.subheader("Mevcut Fiyatlar (TRY) — Alış/Satış")
 
 prices_col, _empty = st.columns([1, 1])  # %50 tablo, %50 boş
 
 with prices_col:
     if snap.prices_try:
-        dfp = pd.DataFrame(
-            [{"Kod": k, "TRY": v} for k, v in sorted(snap.prices_try.items())]
-        )
+        price_rows = []
+        code_order = [
+            ("USD", "Dolar (USD)"),
+            ("EUR", "Euro (EUR)"),
+            ("GRAM", "Gram Altın"),
+            ("CEYREK", "Çeyrek Altın"),
+            ("YARIM", "Yarım Altın"),
+            ("ATA", "Ata Altın"),
+            ("BILEZIK", "Bilezik"),
+        ]
+        seen = set()
+        for code, label in code_order:
+            buy_key = f"{code}_BUY"
+            sell_key = f"{code}_SELL"
+            buy_val = snap.prices_try.get(buy_key)
+            sell_val = snap.prices_try.get(sell_key, buy_val)
+            price_rows.append({
+                "Varlık": label,
+                "Alış (TL)": buy_val,
+                "Satış (TL)": sell_val,
+            })
+            seen.add(label.lower())
+
+        # Add all items that contain "ALTIN" from raw data
+        if snap.raw_data:
+            for _, item in snap.raw_data.items():
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("Name") or item.get("name") or "")
+                if "ALTIN" not in name.upper():
+                    continue
+                label = name.strip()
+                if not label:
+                    continue
+                if label.lower() in seen:
+                    continue
+                buying = item.get("Buying") or item.get("buying") or item.get("Alış") or item.get("alis")
+                selling = item.get("Selling") or item.get("selling") or item.get("Satış") or item.get("satis")
+                price_rows.append({
+                    "Varlık": label,
+                    "Alış (TL)": buying,
+                    "Satış (TL)": selling if selling is not None else buying,
+                })
+                seen.add(label.lower())
+
+        dfp = pd.DataFrame(price_rows)
         st.dataframe(dfp, use_container_width=True, height=300)
     else:
         st.warning(
@@ -346,18 +682,32 @@ with prices_col:
             "'Kur (TL)' alanına manuel yazabilirsin."
         )
 
+if snap.raw_data:
+    with st.expander("Ham Kur Tablosu (Tüm Kalemler)"):
+        rows = []
+        for code, item in snap.raw_data.items():
+            if not isinstance(item, dict):
+                continue
+            name = item.get("Name") or item.get("name") or ""
+            buying = item.get("Buying") or item.get("buying") or item.get("Alış") or item.get("alis")
+            selling = item.get("Selling") or item.get("selling") or item.get("Satış") or item.get("satis")
+            change = item.get("Change") or item.get("change") or item.get("Degisim") or item.get("degisim")
+            rows.append({
+                "Kod": code,
+                "Ad": name,
+                "Alış": buying,
+                "Satış": selling,
+                "Değişim": change,
+            })
+        if rows:
+            df_raw = pd.DataFrame(rows)
+            st.dataframe(df_raw, use_container_width=True, height=400)
+
 # ----------------------------
 # Download (Excel) + Save now
 # ----------------------------
 
 xlsx_bytes = build_bilanco_xlsx(display_df2, debts_df)
-
-st.sidebar.download_button(
-    "Bilançoyu İndir (Excel)",
-    data=xlsx_bytes,
-    file_name="bilanco.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
 
 if st.session_state.get("force_save_state"):
     payload = {
@@ -366,10 +716,38 @@ if st.session_state.get("force_save_state"):
         "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
         "net_history": st.session_state.get("net_history", []),
         "cashflow_base_date": st.session_state.get("cashflow_base_date", "2026-01-28"),
+        "baseline_date": st.session_state.get("baseline_date", BASELINE_DATE),
+        "baseline_net": st.session_state.get("baseline_net", BASELINE_NET),
+        "interest_last_date": st.session_state.get("interest_last_date"),
     }
     save_state(state_path, payload)
     st.sidebar.success("Kaydedildi.")
     st.session_state["force_save_state"] = False
+
+# Sidebar action buttons (bottom)
+if st.sidebar.button("Kurları Güncelle"):
+    # Force bypass cache: bump nonce + clear cache + set flag
+    st.session_state["prices_nonce"] += 1
+    st.session_state["force_refresh_prices"] = True
+    try:
+        cached_prices.clear()
+    except Exception:
+        pass
+
+if st.sidebar.button("Bilançoyu Kaydet"):
+    st.session_state["force_save_state"] = True
+if st.sidebar.button("Bilançoyu Yükle"):
+    st.session_state["force_reload_state"] = True
+st.sidebar.download_button(
+    "Bilançoyu İndir (Excel)",
+    data=xlsx_bytes,
+    file_name="bilanco.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+if st.sidebar.button("Çıkış Yap"):
+    st.session_state["auth"] = {"logged_in": False, "username": None, "role": "user"}
+    st.rerun()
+
 
 
 def sum_two_integers(a: int, b: int) -> int:

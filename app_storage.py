@@ -23,6 +23,9 @@ def save_state_to_json(path: str, session_state: Dict[str, Any]) -> None:
         "assets": session_state["assets_df"].to_dict(orient="records"),
         "debts": session_state["debts_df"].to_dict(orient="records"),
         "cashflow_base_date": session_state.get("cashflow_base_date"),
+        "baseline_date": session_state.get("baseline_date"),
+        "baseline_net": session_state.get("baseline_net"),
+        "interest_last_date": session_state.get("interest_last_date"),
         "saved_at": dt.datetime.now().replace(microsecond=0).isoformat(),
     }
     with open(path, "w", encoding="utf-8") as f:

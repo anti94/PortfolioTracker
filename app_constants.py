@@ -1,7 +1,7 @@
 STATE_FILE = "portfolio_state.json"
 DEFAULT_STATE_FILE = "portfolio_state.json"
 
-ASSET_COLS = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Not"]
+ASSET_COLS = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Yıllık Faiz (%)", "Not"]
 DEBT_COLS = ["Borç Adı", "Tutar (TL)", "Not"]
 
 AUTO_PRICE_KEY = {

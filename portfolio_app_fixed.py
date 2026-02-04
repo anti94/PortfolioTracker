@@ -134,28 +134,85 @@ def apply_daily_deposit_interest(assets_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _load_remembered_credentials(path: str) -> tuple[str, str]:
-    if not os.path.exists(path):
-        return "", ""
-    try:
-        import json
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        username = str(data.get("username", "")).strip()
-        password = str(data.get("password", "")).strip()
-        return username, password
-    except Exception:
-        return "", ""
+def _load_remembered_credentials() -> tuple[str, str]:
+    username = str(st.session_state.get("remembered_username", "")).strip()
+    password = str(st.session_state.get("remembered_password", "")).strip()
+    return username, password
 
 
-def _save_remembered_credentials(path: str, username: str, password: str) -> None:
-    import json
+def _save_remembered_credentials(username: str, password: str) -> None:
     if not username:
-        if os.path.exists(path):
-            os.remove(path)
+        st.session_state["remembered_username"] = ""
+        st.session_state["remembered_password"] = ""
         return
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"username": username, "password": password}, f, ensure_ascii=False, indent=2)
+    st.session_state["remembered_username"] = username
+    st.session_state["remembered_password"] = password
+
+
+def _inject_localstorage_prefill() -> None:
+    js = """
+    <script>
+    (function () {
+      const uKey = "portfolio_remember_username";
+      const pKey = "portfolio_remember_password";
+      const rKey = "portfolio_remember_enabled";
+
+      function setInputValue(selector, value) {
+        const el = document.querySelector(selector);
+        if (!el || el.value) return;
+        el.value = value || "";
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      function setCheckbox(selector, checked) {
+        const el = document.querySelector(selector);
+        if (!el) return;
+        if (el.checked === checked) return;
+        el.checked = checked;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
+      const username = localStorage.getItem(uKey) || "";
+      const password = localStorage.getItem(pKey) || "";
+      const remember = (localStorage.getItem(rKey) || "") === "1";
+
+      setTimeout(() => {
+        setInputValue('input[aria-label="Kullanıcı adı"]', username);
+        setInputValue('input[aria-label="Şifre"]', password);
+        setCheckbox('input[aria-label="Beni hatırla"]', remember && !!username);
+      }, 50);
+    })();
+    </script>
+    """
+    st.components.v1.html(js, height=0)
+
+
+def _persist_remember_in_browser(username: str, password: str) -> None:
+    js = f"""
+    <script>
+    (function () {{
+      localStorage.setItem("portfolio_remember_username", {username!r});
+      localStorage.setItem("portfolio_remember_password", {password!r});
+      localStorage.setItem("portfolio_remember_enabled", "1");
+    }})();
+    </script>
+    """
+    st.components.v1.html(js, height=0)
+
+
+def _clear_remember_in_browser() -> None:
+    js = """
+    <script>
+    (function () {
+      localStorage.removeItem("portfolio_remember_username");
+      localStorage.removeItem("portfolio_remember_password");
+      localStorage.removeItem("portfolio_remember_enabled");
+    })();
+    </script>
+    """
+    st.components.v1.html(js, height=0)
 
 
 # ----------------------------
@@ -172,7 +229,6 @@ st.title(APP_TITLE)
 
 st.session_state.setdefault("auth", {"logged_in": False, "username": None, "role": "user"})
 users_data = load_users("users.json")
-remember_path = os.path.join("user_data", "_remember.json")
 
 if not st.session_state["auth"]["logged_in"]:
     login_tab, signup_tab = st.tabs(["Giriş", "Kayıt Ol"])
@@ -180,11 +236,13 @@ if not st.session_state["auth"]["logged_in"]:
     with login_tab:
         st.subheader("Giriş")
         with st.form("login_form"):
-            remembered_username, remembered_password = _load_remembered_credentials(remember_path)
+            remembered_username, remembered_password = _load_remembered_credentials()
             username = st.text_input("Kullanıcı adı", value=remembered_username)
             password = st.text_input("Şifre", type="password", value=remembered_password)
             remember_me = st.checkbox("Beni hatırla", value=bool(remembered_username))
+            st.caption("Not: Beni hatırla bu cihazın tarayıcısında saklar. İsterseniz tarayıcı şifre yöneticisini de kullanabilirsiniz.")
             submitted = st.form_submit_button("Giriş Yap")
+        _inject_localstorage_prefill()
 
         if submitted:
             username_clean = username.strip()
@@ -195,9 +253,11 @@ if not st.session_state["auth"]["logged_in"]:
                     "role": get_user_role(users_data, username_clean),
                 }
                 if remember_me:
-                    _save_remembered_credentials(remember_path, username_clean, password)
+                    _save_remembered_credentials(username_clean, password)
+                    _persist_remember_in_browser(username_clean, password)
                 else:
-                    _save_remembered_credentials(remember_path, "", "")
+                    _save_remembered_credentials("", "")
+                    _clear_remember_in_browser()
                 st.success("Giriş başarılı.")
                 st.rerun()
             else:
@@ -475,9 +535,7 @@ for group_key, group_label, group_style in groups:
     display_df = compute_display_assets(group_df, snap.prices_try, use_side=use_side)
 
     display_cols = display_cols_assets_tl if group_key == "TL HESABI" else display_cols_assets_other
-    for col in display_cols:
-        if col not in display_df.columns:
-            display_df[col] = None
+    display_df = display_df.reindex(columns=display_cols, fill_value=None)
     edited = st.data_editor(
         display_df[display_cols],
         use_container_width=True,

@@ -9,6 +9,16 @@
       "salt": "ac4QERh5oQgH98PJJ8E+1Q==",
       "hash": "kcz0Rmea5PyPWoQ9YD2muf6//bBK2LvQB+osO9gB1Rk=",
       "role": "user"
+    },
+    "Deneme": {
+      "salt": "rgnB4MsotTAJWDN07yG84Q==",
+      "hash": "klcCtcTpR4xw5xuCkKOmJbvasbwNc9iq4nmwLWZmKsE=",
+      "role": "user"
+    },
+    "danama": {
+      "salt": "u7w/Z1eXdCC85+hWFnpTSQ==",
+      "hash": "jmpkf/CnrPlXSvh9hHc0t9KpA8wjMmmBxZHW36rOD6o=",
+      "role": "user"
     }
   }
 }

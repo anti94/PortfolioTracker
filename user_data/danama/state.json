@@ -1,0 +1,24 @@
+{
+  "assets": [
+    {
+      "Varlık Türü": "Mevduat Hesabı",
+      "Kod": "TRY",
+      "Adet": 0.0,
+      "Kur (TL)": 0.0,
+      "Yıllık Faiz (%)": 0.0,
+      "Not": ""
+    }
+  ],
+  "debts": [
+    {
+      "Borç Adı": "",
+      "Tutar (TL)": 0.0,
+      "Not": ""
+    }
+  ],
+  "cashflow_base_date": "2026-02-04",
+  "baseline_date": "2026-02-04",
+  "baseline_net": 0.0,
+  "interest_last_date": "2026-02-04",
+  "saved_at": "2026-02-04T22:54:55"
+}

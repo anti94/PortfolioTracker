@@ -252,6 +252,7 @@ if not st.session_state["auth"]["logged_in"]:
                     "username": username_clean,
                     "role": get_user_role(users_data, username_clean),
                 }
+                st.session_state["active_user"] = username_clean
                 if remember_me:
                     _save_remembered_credentials(username_clean, password)
                     _persist_remember_in_browser(username_clean, password)
@@ -286,16 +287,30 @@ if not st.session_state["auth"]["logged_in"]:
 
 username = st.session_state["auth"]["username"]
 role = st.session_state["auth"]["role"]
+last_user = st.session_state.get("active_user")
+if last_user is None or last_user != username:
+    # Clear user-scoped session data when switching users
+    for key in [
+        "assets_df",
+        "debts_df",
+        "net_history",
+        "prices_snap",
+        "cashflow_base_date",
+        "baseline_date",
+        "baseline_net",
+        "interest_last_date",
+        "initialized",
+        "force_reload_state",
+        "force_save_state",
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state["active_user"] = username
 user_dir = os.path.join("user_data", username)
 os.makedirs(user_dir, exist_ok=True)
 state_path = os.path.join(user_dir, "state.json")
 
-# If user has no personal state yet, try to migrate legacy global state
-legacy_state_path = "portfolio_state.json"
-if not os.path.exists(state_path) and os.path.exists(legacy_state_path):
-    legacy_data = load_state_from_json(legacy_state_path)
-    if legacy_data:
-        save_state(state_path, legacy_data)
+# If user has no personal state yet, start with empty defaults.
 
 # Sidebar controls FIRST (so reruns see flags)
 st.sidebar.header("Ayarlar")

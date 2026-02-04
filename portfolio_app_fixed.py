@@ -23,7 +23,8 @@ from app_auth import (
 from app_excel import build_bilanco_xlsx
 from app_net_history import ensure_baseline_net, get_net_for, upsert_net_snapshot
 from app_pricing import PriceSnapshot, fetch_prices
-from app_storage import load_state_from_json, save_state, save_state_to_json
+from app_storage import load_state_for_user, save_payload_for_user, save_state_for_user
+from app_mongo import mongo_enabled
 
 
 # ----------------------------
@@ -250,6 +251,7 @@ if not st.session_state["auth"]["logged_in"]:
 
         if submitted:
             username_clean = username.strip()
+            users_data = load_users(USERS_PATH)
             if verify_user(users_data, username_clean, password):
                 st.session_state["auth"] = {
                     "logged_in": True,
@@ -310,15 +312,19 @@ if last_user is None or last_user != username:
         if key in st.session_state:
             del st.session_state[key]
     st.session_state["active_user"] = username
-user_dir = os.path.join(USER_DATA_ROOT, username)
-os.makedirs(user_dir, exist_ok=True)
-state_path = os.path.join(user_dir, "state.json")
+if mongo_enabled():
+    state_path = None
+else:
+    user_dir = os.path.join(USER_DATA_ROOT, username)
+    os.makedirs(user_dir, exist_ok=True)
+    state_path = os.path.join(user_dir, "state.json")
 
 # If user has no personal state yet, start with empty defaults.
 
 # Sidebar controls FIRST (so reruns see flags)
 st.sidebar.header("Ayarlar")
-st.sidebar.text_input("Kayıt dosyası", value=state_path, disabled=True)
+storage_label = "MongoDB" if mongo_enabled() else state_path
+st.sidebar.text_input("Kayıt konumu", value=storage_label, disabled=True)
 refresh_sec = st.sidebar.number_input("Oto yenileme (sn) — 0 kapalı", min_value=0, max_value=3600, value=60, step=10)
 use_side = "BUY"
 timeout_s = st.sidebar.slider("Fiyat çekme timeout (sn)", min_value=3, max_value=30, value=10)
@@ -373,7 +379,7 @@ if role == "admin":
 # Force Load / Save handlers
 # =========================
 if st.session_state.get("force_reload_state"):
-    data = load_state_from_json(state_path)
+    data = load_state_for_user(username, path=state_path)
     if data:
         assets = pd.DataFrame(data.get("assets", []))
         debts  = pd.DataFrame(data.get("debts", []))
@@ -410,7 +416,7 @@ if st.session_state.get("force_reload_state"):
     st.rerun()
 
 if st.session_state.get("force_save_state"):
-    save_state_to_json(state_path, st.session_state)
+    save_state_for_user(username, st.session_state, path=state_path)
     st.sidebar.success("Bilanço Durumu JSON'a kaydedildi.")
     st.session_state["force_save_state"] = False
 
@@ -421,7 +427,7 @@ st.sidebar.divider()
 # Init session (FROM JSON)
 # =========================
 if "initialized" not in st.session_state:
-    data = load_state_from_json(state_path)
+    data = load_state_for_user(username, path=state_path)
 
     if data:
         assets = pd.DataFrame(data.get("assets", []))
@@ -478,8 +484,8 @@ if "initialized" not in st.session_state:
     st.session_state["initialized"] = True
 
     # İlk girişte kullanıcı dosyasını oluştur
-    if not os.path.exists(state_path):
-        save_state_to_json(state_path, st.session_state)
+    if not mongo_enabled() and state_path and (not os.path.exists(state_path)):
+        save_state_for_user(username, st.session_state, path=state_path)
 
 
 st.session_state.setdefault("prices_snap", PriceSnapshot(prices_try={}, fetched_at=dt.datetime.now(), source="N/A"))
@@ -797,7 +803,7 @@ if st.session_state.get("force_save_state"):
         "baseline_net": st.session_state.get("baseline_net", BASELINE_NET),
         "interest_last_date": st.session_state.get("interest_last_date"),
     }
-    save_state(state_path, payload)
+    save_payload_for_user(username, payload, path=state_path)
     st.sidebar.success("Kaydedildi.")
     st.session_state["force_save_state"] = False
 

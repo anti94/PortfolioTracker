@@ -492,6 +492,7 @@ st.session_state.setdefault("prices_snap", PriceSnapshot(prices_try={}, fetched_
 st.session_state.setdefault("net_history", [])
 st.session_state.setdefault("cashflow_base_date", st.session_state.get("baseline_date", BASELINE_DATE))
 st.session_state.setdefault("interest_last_date", dt.date.today().isoformat())
+st.session_state.setdefault("post_cache_refresh_done", False)
 
 
 @st.cache_data(ttl=60)
@@ -504,7 +505,6 @@ def cached_prices(timeout_s_: int, nonce: int) -> PriceSnapshot:
 # Auto refresh tick
 do_refresh = st.session_state.get("force_refresh_prices", False)
 if refresh_sec and refresh_sec > 0:
-    st.caption(f"Oto yenileme açık: {refresh_sec} sn")
     st.session_state["_last_tick"] = st.session_state.get("_last_tick", time.time())
     if time.time() - st.session_state["_last_tick"] >= refresh_sec:
         do_refresh = True
@@ -520,8 +520,31 @@ else:
     # Cached pull
     snap = cached_prices(timeout_s_=timeout_s, nonce=st.session_state["prices_nonce"])
     st.session_state["prices_snap"] = snap
+    # After showing cached prices once, refresh from API shortly after
+    if not st.session_state.get("post_cache_refresh_done", False):
+        time.sleep(1.5)
+        snap_live = fetch_prices(timeout_s=timeout_s)
+        st.session_state["prices_snap"] = snap_live
+        st.session_state["post_cache_refresh_done"] = True
+        st.rerun()
 
 snap: PriceSnapshot = st.session_state["prices_snap"]
+def _get_update_date_display(snap_: PriceSnapshot) -> str:
+    try:
+        if getattr(snap_, "update_date_str", None):
+            return str(snap_.update_date_str)
+        if snap_.raw_data and isinstance(snap_.raw_data, dict):
+            ud = snap_.raw_data.get("Update_Date") or snap_.raw_data.get("UpdateDate") or snap_.raw_data.get("update_date")
+            if ud:
+                return str(ud)
+    except Exception:
+        pass
+    return snap_.fetched_at.strftime("%Y-%m-%d %H:%M:%S")
+
+if refresh_sec and refresh_sec > 0:
+    last_update_str = _get_update_date_display(snap)
+    st.caption(f"Oto yenileme açık: {refresh_sec} sn. Son güncelleme: {last_update_str}")
+    st.caption("Son güncelleme: 2026-02-05 00:25:01")
 
 
 # ----------------------------

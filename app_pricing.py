@@ -16,6 +16,7 @@ class PriceSnapshot:
     source: str
     notes: str = ""
     raw_data: Optional[Dict[str, object]] = None
+    update_date_str: Optional[str] = None
 
 
 def _to_float_tr(s: str) -> Optional[float]:
@@ -139,6 +140,7 @@ def _fetch_truncgil(url: str, timeout_s: int) -> Optional[PriceSnapshot]:
             source=url,
             notes="Kaynak: Truncgil today.json. Zaman: Update_Date.",
             raw_data=data,
+            update_date_str=str(update_date) if update_date else None,
         )
     except Exception:
         return None

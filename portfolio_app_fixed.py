@@ -220,6 +220,10 @@ def _clear_remember_in_browser() -> None:
 # ----------------------------
 
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+USERS_PATH = os.path.join(APP_DIR, "users.json")
+USER_DATA_ROOT = os.path.join(APP_DIR, "user_data")
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
@@ -228,7 +232,7 @@ st.title(APP_TITLE)
 # ----------------------------
 
 st.session_state.setdefault("auth", {"logged_in": False, "username": None, "role": "user"})
-users_data = load_users("users.json")
+users_data = load_users(USERS_PATH)
 
 if not st.session_state["auth"]["logged_in"]:
     login_tab, signup_tab = st.tabs(["Giriş", "Kayıt Ol"])
@@ -278,7 +282,7 @@ if not st.session_state["auth"]["logged_in"]:
             else:
                 ok, msg = create_user(users_data, new_username, new_password, role="user")
                 if ok:
-                    save_users(users_data, "users.json")
+                    save_users(users_data, USERS_PATH)
                     st.success("Kayıt başarılı. Şimdi giriş yapabilirsiniz.")
                 else:
                     st.error(msg)
@@ -306,7 +310,7 @@ if last_user is None or last_user != username:
         if key in st.session_state:
             del st.session_state[key]
     st.session_state["active_user"] = username
-user_dir = os.path.join("user_data", username)
+user_dir = os.path.join(USER_DATA_ROOT, username)
 os.makedirs(user_dir, exist_ok=True)
 state_path = os.path.join(user_dir, "state.json")
 
@@ -335,7 +339,7 @@ if role == "admin":
         if st.button("Kullanıcı Ekle", key="admin_add_user"):
             ok, msg = create_user(users_data, admin_new_username, admin_new_password, role=admin_role)
             if ok:
-                save_users(users_data, "users.json")
+                save_users(users_data, USERS_PATH)
                 st.success(msg)
             else:
                 st.error(msg)
@@ -346,7 +350,7 @@ if role == "admin":
         if st.button("Şifreyi Güncelle", key="admin_pw_update"):
             ok, msg = update_password(users_data, target_user, new_pw)
             if ok:
-                save_users(users_data, "users.json")
+                save_users(users_data, USERS_PATH)
                 st.success(msg)
             else:
                 st.error(msg)
@@ -359,7 +363,7 @@ if role == "admin":
             else:
                 ok, msg = delete_user(users_data, delete_user_name)
                 if ok:
-                    save_users(users_data, "users.json")
+                    save_users(users_data, USERS_PATH)
                     st.success(msg)
                 else:
                     st.error(msg)

@@ -23,6 +23,11 @@ def _to_float_tr(s: str) -> Optional[float]:
     """Converts strings like '7.609,50' to float."""
     if s is None:
         return None
+    if isinstance(s, (int, float)):
+        try:
+            return float(s)
+        except Exception:
+            return None
     s = str(s).strip()
     if not s:
         return None
@@ -174,8 +179,9 @@ def fetch_from_harem_gecmis_kurlar(timeout_s: int = 10) -> Optional[PriceSnapsho
             if code in {"USDTRY", "EURTRY"}:
                 buy = _to_float_tr(tds[2])
                 if buy is not None:
-                    prices[f"{code}_BUY"] = buy
-                    prices[f"{code}_SELL"] = buy
+                    key = "USD" if code == "USDTRY" else "EUR"
+                    prices[f"{key}_BUY"] = buy
+                    prices[f"{key}_SELL"] = buy
 
         if not prices:
             return None
@@ -195,6 +201,8 @@ def fetch_prices(timeout_s: int = 10) -> PriceSnapshot:
     notes = []
     merged: Dict[str, float] = {}
     fetched_at = dt.datetime.now()
+    raw_data = None
+    update_date_str = None
 
     snap = fetch_from_truncgil_today_json(timeout_s=timeout_s)
     if snap:
@@ -202,6 +210,8 @@ def fetch_prices(timeout_s: int = 10) -> PriceSnapshot:
         fetched_at = snap.fetched_at
         sources.append(snap.source)
         notes.append(snap.notes)
+        raw_data = snap.raw_data
+        update_date_str = snap.update_date_str
 
     if not merged:
         snap2 = fetch_from_harem_gecmis_kurlar(timeout_s=timeout_s)
@@ -224,4 +234,6 @@ def fetch_prices(timeout_s: int = 10) -> PriceSnapshot:
         fetched_at=fetched_at,
         source=" + ".join(sources),
         notes=" | ".join(notes),
+        raw_data=raw_data,
+        update_date_str=update_date_str,
     )

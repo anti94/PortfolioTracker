@@ -8,7 +8,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-from app_compute import compute_display_assets, compute_totals
+from app_compute import compute_display_assets, compute_totals, get_auto_unit_price
 from app_constants import APP_TITLE, ASSET_COLS, DEBT_COLS, BASELINE_DATE, BASELINE_NET
 from app_auth import (
     create_user,
@@ -493,6 +493,9 @@ st.session_state.setdefault("net_history", [])
 st.session_state.setdefault("cashflow_base_date", st.session_state.get("baseline_date", BASELINE_DATE))
 st.session_state.setdefault("interest_last_date", dt.date.today().isoformat())
 st.session_state.setdefault("post_cache_refresh_done", False)
+st.session_state.setdefault("prices_bootstrap_done", False)
+st.session_state.setdefault("editor_refresh_token", 0)
+st.session_state.setdefault("prices_sig", None)
 
 
 @st.cache_data(ttl=60)
@@ -500,6 +503,22 @@ def cached_prices(timeout_s_: int, nonce: int) -> PriceSnapshot:
     # nonce intentionally unused except to change the cache key
     _ = nonce
     return fetch_prices(timeout_s=timeout_s_)
+
+# Sidebar action: manual refresh must run before fetch & editor render
+if st.sidebar.button("Kurları Güncelle", key="refresh_rates"):
+    # Force bypass cache: bump nonce + clear cache + set flag
+    st.session_state["prices_nonce"] += 1
+    st.session_state["force_refresh_prices"] = True
+    # Reset editor state so Kur (TL) shows new auto values after refresh.
+    st.session_state["editor_refresh_token"] += 1
+    try:
+        cached_prices.clear()
+    except Exception:
+        pass
+
+# Sidebar action: manual refresh must run before fetch & editor render
+
+# Sidebar action: manual refresh must run before fetch & editor render
 
 
 # Auto refresh tick
@@ -511,7 +530,18 @@ if refresh_sec and refresh_sec > 0:
         st.session_state["_last_tick"] = time.time()
         st.session_state["prices_nonce"] += 1  # bump nonce so cached_prices can't stick
 
-if do_refresh:
+if not st.session_state.get("prices_bootstrap_done", False):
+    # First run in this session: always pull live to avoid stale cache.
+    st.session_state["prices_nonce"] += 1
+    try:
+        cached_prices.clear()
+    except Exception:
+        pass
+    snap = fetch_prices(timeout_s=timeout_s)
+    st.session_state["prices_snap"] = snap
+    st.session_state["prices_bootstrap_done"] = True
+    st.session_state["post_cache_refresh_done"] = True
+elif do_refresh:
     # Always pull live
     snap = fetch_prices(timeout_s=timeout_s)
     st.session_state["prices_snap"] = snap
@@ -520,15 +550,14 @@ else:
     # Cached pull
     snap = cached_prices(timeout_s_=timeout_s, nonce=st.session_state["prices_nonce"])
     st.session_state["prices_snap"] = snap
-    # After showing cached prices once, refresh from API shortly after
-    if not st.session_state.get("post_cache_refresh_done", False):
-        time.sleep(1.5)
-        snap_live = fetch_prices(timeout_s=timeout_s)
-        st.session_state["prices_snap"] = snap_live
-        st.session_state["post_cache_refresh_done"] = True
-        st.rerun()
 
 snap: PriceSnapshot = st.session_state["prices_snap"]
+prices_sig = tuple(sorted((snap.prices_try or {}).items()))
+if st.session_state.get("prices_sig") != prices_sig:
+    st.session_state["prices_sig"] = prices_sig
+    # Reset editor state when prices change so Kur (TL) refreshes.
+    st.session_state["editor_refresh_token"] += 1
+
 def _get_update_date_display(snap_: PriceSnapshot) -> str:
     try:
         if getattr(snap_, "update_date_str", None):
@@ -543,8 +572,8 @@ def _get_update_date_display(snap_: PriceSnapshot) -> str:
 
 if refresh_sec and refresh_sec > 0:
     last_update_str = _get_update_date_display(snap)
-    st.caption(f"Oto yenileme açık: {refresh_sec} sn. Son güncelleme: {last_update_str}")
-    st.caption("Son güncelleme: 2026-02-05 00:25:01")
+st.caption(f"Oto yenileme açık: {refresh_sec} sn. Son güncelleme: {last_update_str}")
+st.caption("Son güncelleme: 2026-02-05 00:25:01")
 
 
 # ----------------------------
@@ -557,6 +586,18 @@ st.caption("Tutar otomatik = Kur * Adet.")
 # Günlük faiz işletimi (Mevduat hesabı)
 st.session_state["assets_df"] = apply_daily_deposit_interest(st.session_state["assets_df"])
 st.session_state["assets_df"] = _normalize_asset_codes(st.session_state["assets_df"])
+
+# Sync auto prices into session data so editor shows latest Kur (TL)
+def _apply_auto_prices(df: pd.DataFrame, prices: dict, use_side_: str) -> pd.DataFrame:
+    out = df.copy()
+    for idx, row in out.iterrows():
+        code = row.get("Kod", "")
+        auto_kur = get_auto_unit_price(code, prices, use_side_)
+        if auto_kur is not None:
+            out.at[idx, "Kur (TL)"] = auto_kur
+    return out
+
+st.session_state["assets_df"] = _apply_auto_prices(st.session_state["assets_df"], snap.prices_try, use_side)
 
 assets_df_base = st.session_state["assets_df"].copy()
 assets_df_base["__group__"] = assets_df_base["Kod"].apply(_asset_group_from_code)
@@ -607,7 +648,7 @@ for group_key, group_label, group_style in groups:
             ),
         },
         disabled=["Tutar (TL)"],
-        key=f"assets_editor_{group_key}",
+        key=f"assets_editor_{group_key}_{st.session_state['editor_refresh_token']}",
     )
 
     for c in keep_cols_assets:
@@ -831,14 +872,6 @@ if st.session_state.get("force_save_state"):
     st.session_state["force_save_state"] = False
 
 # Sidebar action buttons (bottom)
-if st.sidebar.button("Kurları Güncelle"):
-    # Force bypass cache: bump nonce + clear cache + set flag
-    st.session_state["prices_nonce"] += 1
-    st.session_state["force_refresh_prices"] = True
-    try:
-        cached_prices.clear()
-    except Exception:
-        pass
 
 if st.sidebar.button("Bilançoyu Kaydet"):
     st.session_state["force_save_state"] = True

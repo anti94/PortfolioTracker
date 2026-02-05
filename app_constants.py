@@ -5,8 +5,8 @@ ASSET_COLS = ["Varlık Türü", "Kod", "Adet", "Kur (TL)", "Yıllık Faiz (%)", 
 DEBT_COLS = ["Borç Adı", "Tutar (TL)", "Not"]
 
 AUTO_PRICE_KEY = {
-    "USD": ("USDTRY_BUY", "USDTRY_SELL"),
-    "EUR": ("EURTRY_BUY", "EURTRY_SELL"),
+    "USD": ("USD_BUY", "USD_SELL"),
+    "EUR": ("EUR_BUY", "EUR_SELL"),
     "GRAM": ("GRAM_BUY", "GRAM_SELL"),
     "CEYREK": ("CEYREK_BUY", "CEYREK_SELL"),
     "YARIM": ("YARIM_BUY", "YARIM_SELL"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 
 def _get_secret(name: str) -> Optional[str]:
@@ -51,6 +51,7 @@ def get_db():
 
     _client = MongoClient(uri, serverSelectionTimeoutMS=5000)
     _db = _client[get_mongo_db_name()]
+    _db.command("ping")
     try:
         _db["users"].create_index("username", unique=True)
         _db["user_state"].create_index("username", unique=True)
@@ -58,3 +59,14 @@ def get_db():
         # Index creation can fail if permissions are limited; ignore to avoid crash
         pass
     return _db
+
+
+def get_db_if_available() -> Optional[Any]:
+    try:
+        return get_db()
+    except Exception:
+        return None
+
+
+def mongo_available() -> bool:
+    return get_db_if_available() is not None

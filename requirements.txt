@@ -3,5 +3,6 @@ pandas
 requests
 beautifulsoup4
 lxml
+cloudscraper
 openpyxl
 pymongo

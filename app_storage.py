@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 
-from app_mongo import get_db, mongo_enabled
+from app_mongo import get_db, get_db_if_available, mongo_available
 
 def load_state_from_json(path: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(path):
@@ -39,8 +39,10 @@ def build_payload_from_session(session_state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_state_for_user(username: str, path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    if mongo_enabled():
-        db = get_db()
+    if mongo_available():
+        db = get_db_if_available()
+        if db is None:
+            return None
         doc = db["user_state"].find_one({"username": username}, {"_id": 0})
         if not doc:
             return None
@@ -56,8 +58,10 @@ def save_state_for_user(username: str, session_state: Dict[str, Any], path: Opti
 
 
 def save_payload_for_user(username: str, payload: Dict[str, Any], path: Optional[str] = None) -> None:
-    if mongo_enabled():
-        db = get_db()
+    if mongo_available():
+        db = get_db_if_available()
+        if db is None:
+            return
         db["user_state"].update_one(
             {"username": username},
             {"$set": {"username": username, "payload": payload, "updated_at": dt.datetime.utcnow()}},

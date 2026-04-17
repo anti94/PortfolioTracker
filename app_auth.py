@@ -7,7 +7,7 @@ import os
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from app_mongo import get_db, mongo_enabled
+from app_mongo import get_db, get_db_if_available, mongo_available
 
 
 def _pbkdf2_hash(password: str, salt: bytes, rounds: int = 120_000) -> bytes:
@@ -24,19 +24,22 @@ def hash_password(password: str, salt_b64: Optional[str] = None) -> Tuple[str, s
 
 
 def load_users(path: str = "users.json") -> Dict[str, Any]:
-    if mongo_enabled():
+    db = get_db_if_available()
+    if db is not None:
         data: Dict[str, Any] = {"users": {}}
-        db = get_db()
-        for doc in db["users"].find({}, {"_id": 0}):
-            username = doc.get("username")
-            if not username:
-                continue
-            data["users"][username] = {
-                "salt": doc.get("salt"),
-                "hash": doc.get("hash"),
-                "role": doc.get("role", "user"),
-            }
-        return data
+        try:
+            for doc in db["users"].find({}, {"_id": 0}):
+                username = doc.get("username")
+                if not username:
+                    continue
+                data["users"][username] = {
+                    "salt": doc.get("salt"),
+                    "hash": doc.get("hash"),
+                    "role": doc.get("role", "user"),
+                }
+            return data
+        except Exception:
+            return {"users": {}}
     if not os.path.exists(path):
         return {"users": {}}
     try:
@@ -50,8 +53,8 @@ def load_users(path: str = "users.json") -> Dict[str, Any]:
 
 
 def save_users(data: Dict[str, Any], path: str = "users.json") -> None:
-    if mongo_enabled():
-        # No-op in Mongo mode; create/update/delete write directly.
+    if mongo_available():
+        # No-op when MongoDB is available; create/update/delete write directly.
         return
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -70,8 +73,8 @@ def verify_user(users_data: Dict[str, Any], username: str, password: str) -> boo
 
 
 def get_user_role(users_data: Dict[str, Any], username: str) -> str:
-    if mongo_enabled():
-        db = get_db()
+    db = get_db_if_available()
+    if db is not None:
         doc = db["users"].find_one({"username": username}, {"role": 1})
         role = (doc or {}).get("role", "user")
         return role if role in ("admin", "user") else "user"
@@ -99,8 +102,8 @@ def create_user(users_data: Dict[str, Any], username: str, password: str, role: 
         "hash": hash_b64,
         "role": role,
     }
-    if mongo_enabled():
-        db = get_db()
+    db = get_db_if_available()
+    if db is not None:
         db["users"].update_one(
             {"username": username},
             {"$set": {"username": username, "salt": salt_b64, "hash": hash_b64, "role": role}},
@@ -117,8 +120,8 @@ def update_password(users_data: Dict[str, Any], username: str, new_password: str
     salt_b64, hash_b64 = hash_password(new_password)
     users_data["users"][username]["salt"] = salt_b64
     users_data["users"][username]["hash"] = hash_b64
-    if mongo_enabled():
-        db = get_db()
+    db = get_db_if_available()
+    if db is not None:
         db["users"].update_one(
             {"username": username},
             {"$set": {"salt": salt_b64, "hash": hash_b64}},
@@ -131,8 +134,8 @@ def delete_user(users_data: Dict[str, Any], username: str) -> Tuple[bool, str]:
     if username not in users_data.get("users", {}):
         return False, "Kullanıcı bulunamadı."
     users_data["users"].pop(username, None)
-    if mongo_enabled():
-        db = get_db()
+    db = get_db_if_available()
+    if db is not None:
         db["users"].delete_one({"username": username})
         db["user_state"].delete_one({"username": username})
     return True, "Kullanıcı silindi."

@@ -24,7 +24,7 @@ from app_excel import build_bilanco_xlsx
 from app_net_history import ensure_baseline_net, get_net_for, upsert_net_snapshot
 from app_pricing import PriceSnapshot, fetch_prices
 from app_storage import load_state_for_user, save_payload_for_user, save_state_for_user
-from app_mongo import mongo_enabled
+from app_mongo import mongo_available
 
 
 # ----------------------------
@@ -312,7 +312,7 @@ if last_user is None or last_user != username:
         if key in st.session_state:
             del st.session_state[key]
     st.session_state["active_user"] = username
-if mongo_enabled():
+if mongo_available():
     state_path = None
 else:
     user_dir = os.path.join(USER_DATA_ROOT, username)
@@ -323,14 +323,26 @@ else:
 
 # Sidebar controls FIRST (so reruns see flags)
 st.sidebar.header("Ayarlar")
-storage_label = "MongoDB" if mongo_enabled() else state_path
+storage_label = "MongoDB" if mongo_available() else state_path
 st.sidebar.text_input("Kayıt konumu", value=storage_label, disabled=True)
 refresh_sec = st.sidebar.number_input("Oto yenileme (sn) — 0 kapalı", min_value=0, max_value=3600, value=60, step=10)
 use_side = "BUY"
+price_source_label = st.sidebar.radio(
+    "Fiyat kaynagi",
+    options=["1) Truncgil", "2) Harem Altin"],
+    index=0,
+)
+price_source_pref = "truncgil" if price_source_label.startswith("1)") else "harem"
 timeout_s = st.sidebar.slider("Fiyat çekme timeout (sn)", min_value=3, max_value=30, value=10)
 
 # --- Nonce for cache busting (important)
 st.session_state.setdefault("prices_nonce", 0)
+last_source_pref = st.session_state.get("price_source_pref_last")
+if last_source_pref != price_source_pref:
+    st.session_state["price_source_pref_last"] = price_source_pref
+    st.session_state["prices_nonce"] += 1
+    st.session_state["force_refresh_prices"] = True
+    st.session_state["clear_prices_cache_pending"] = True
 
 st.sidebar.divider()
 st.sidebar.caption(f"Kullanıcı: {username} ({role})")
@@ -484,7 +496,7 @@ if "initialized" not in st.session_state:
     st.session_state["initialized"] = True
 
     # İlk girişte kullanıcı dosyasını oluştur
-    if not mongo_enabled() and state_path and (not os.path.exists(state_path)):
+    if not mongo_available() and state_path and (not os.path.exists(state_path)):
         save_state_for_user(username, st.session_state, path=state_path)
 
 
@@ -499,10 +511,17 @@ st.session_state.setdefault("prices_sig", None)
 
 
 @st.cache_data(ttl=60)
-def cached_prices(timeout_s_: int, nonce: int) -> PriceSnapshot:
+def cached_prices(timeout_s_: int, nonce: int, source_pref_: str) -> PriceSnapshot:
     # nonce intentionally unused except to change the cache key
     _ = nonce
-    return fetch_prices(timeout_s=timeout_s_)
+    return fetch_prices(timeout_s=timeout_s_, source_preference=source_pref_)
+
+if st.session_state.get("clear_prices_cache_pending"):
+    try:
+        cached_prices.clear()
+    except Exception:
+        pass
+    st.session_state["clear_prices_cache_pending"] = False
 
 # Sidebar action: manual refresh must run before fetch & editor render
 if st.sidebar.button("Kurları Güncelle", key="refresh_rates"):
@@ -537,21 +556,44 @@ if not st.session_state.get("prices_bootstrap_done", False):
         cached_prices.clear()
     except Exception:
         pass
-    snap = fetch_prices(timeout_s=timeout_s)
+    snap = fetch_prices(timeout_s=timeout_s, source_preference=price_source_pref)
     st.session_state["prices_snap"] = snap
     st.session_state["prices_bootstrap_done"] = True
     st.session_state["post_cache_refresh_done"] = True
 elif do_refresh:
     # Always pull live
-    snap = fetch_prices(timeout_s=timeout_s)
+    snap = fetch_prices(timeout_s=timeout_s, source_preference=price_source_pref)
     st.session_state["prices_snap"] = snap
     st.session_state["force_refresh_prices"] = False
 else:
     # Cached pull
-    snap = cached_prices(timeout_s_=timeout_s, nonce=st.session_state["prices_nonce"])
+    snap = cached_prices(
+        timeout_s_=timeout_s,
+        nonce=st.session_state["prices_nonce"],
+        source_pref_=price_source_pref,
+    )
     st.session_state["prices_snap"] = snap
 
 snap: PriceSnapshot = st.session_state["prices_snap"]
+st.caption(f"Aktif fiyat kaynagi secimi: {price_source_pref} | Gelen kaynak: {snap.source}")
+debug_codes = ["GRAM", "CEYREK", "YARIM", "ATA", "BILEZIK"]
+debug_rows = []
+for code in debug_codes:
+    debug_rows.append({
+        "Kod": code,
+        "BUY": (snap.prices_try or {}).get(f"{code}_BUY"),
+        "SELL": (snap.prices_try or {}).get(f"{code}_SELL"),
+    })
+st.write("Ham altin fiyatlari (kaynak cikisi):")
+st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, height=220)
+if price_source_pref == "harem" and not any(
+    k in (snap.prices_try or {})
+    for k in ["GRAM_BUY", "CEYREK_BUY", "YARIM_BUY", "ATA_BUY", "BILEZIK_BUY"]
+):
+    st.warning(
+        "Harem kaynagindan altin fiyatlari alinamadi. Site yapisi degismis veya erisim engeli olabilir. "
+        "Bu durumda tabloda onceki Kur (TL) degerleri gorunmeye devam eder."
+    )
 prices_sig = tuple(sorted((snap.prices_try or {}).items()))
 if st.session_state.get("prices_sig") != prices_sig:
     st.session_state["prices_sig"] = prices_sig

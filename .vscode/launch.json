@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Portfolio Streamlit",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "run",
+        "portfolio_app_fixed.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8501"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 {
   "users": {
     "cgulucan": {
-      "salt": "X/VHaUhcQ2l7iRp61YMQiw==",
-      "hash": "C7A7ntqufpUnSjervbo0h+R8u77bT/NtvOFFAvokHJ0=",
+      "salt": "zc/dXHbNPw/ibbPypCuTOQ==",
+      "hash": "J6zxZIJ7J6NeHMAz1DxBrJc6nKfNyWbyaStGKh++3qs=",
       "role": "admin"
     },
     "caglar": {
@@ -19,6 +19,11 @@
       "salt": "u7w/Z1eXdCC85+hWFnpTSQ==",
       "hash": "jmpkf/CnrPlXSvh9hHc0t9KpA8wjMmmBxZHW36rOD6o=",
       "role": "user"
+    },
+    "fenerbahce": {
+      "salt": "FLYRnjsqr2AJLNqakyF5dQ==",
+      "hash": "vNezskOHoXyxeK8uW87Yh3RKe6biip8oSwjfdA8Xp54=",
+      "role": "admin"
     }
   }
 }

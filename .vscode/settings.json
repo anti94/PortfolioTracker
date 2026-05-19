@@ -4,5 +4,6 @@
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "chatgpt.openOnStartup": false
+    "chatgpt.openOnStartup": false,
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

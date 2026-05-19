@@ -23,7 +23,7 @@ from app_auth import (
 from app_excel import build_bilanco_xlsx
 from app_net_history import ensure_baseline_net, get_net_for, upsert_net_snapshot
 from app_pricing import PriceSnapshot, fetch_prices
-from app_storage import load_state_for_user, save_payload_for_user, save_state_for_user
+from app_storage import load_state_for_user, save_state_for_user
 from app_mongo import mongo_available
 
 
@@ -88,6 +88,40 @@ def _asset_group_from_code(code: str) -> str:
     if code in {"GRAM", "CEYREK", "YARIM", "ATA", "BILEZIK"}:
         return "ALTIN HESABI"
     return "TL HESABI"
+
+
+def _load_portfolio_state_into_session(data: dict | None) -> bool:
+    if not data:
+        return False
+
+    assets = pd.DataFrame(data.get("assets", []))
+    debts = pd.DataFrame(data.get("debts", []))
+
+    for c in ASSET_COLS:
+        if c not in assets.columns:
+            if c == "Kod":
+                assets[c] = "TRY"
+            elif c in ("Varlık Türü", "Not"):
+                assets[c] = ""
+            else:
+                assets[c] = 0.0
+    assets = _normalize_asset_codes(assets[ASSET_COLS])
+
+    for c in DEBT_COLS:
+        if c not in debts.columns:
+            debts[c] = "" if c in ("Borç Adı", "Not") else 0.0
+    debts = debts[DEBT_COLS]
+
+    st.session_state["assets_df"] = assets
+    st.session_state["debts_df"] = debts
+    st.session_state["cashflow_base_date"] = data.get(
+        "cashflow_base_date",
+        st.session_state.get("cashflow_base_date", dt.date.today().isoformat()),
+    )
+    st.session_state["baseline_date"] = data.get("baseline_date", BASELINE_DATE)
+    st.session_state["baseline_net"] = data.get("baseline_net", BASELINE_NET)
+    st.session_state["interest_last_date"] = data.get("interest_last_date")
+    return True
 
 
 
@@ -306,8 +340,6 @@ if last_user is None or last_user != username:
         "baseline_net",
         "interest_last_date",
         "initialized",
-        "force_reload_state",
-        "force_save_state",
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -386,53 +418,6 @@ if role == "admin":
                 else:
                     st.error(msg)
 
-
-# =========================
-# Force Load / Save handlers
-# =========================
-if st.session_state.get("force_reload_state"):
-    data = load_state_for_user(username, path=state_path)
-    if data:
-        assets = pd.DataFrame(data.get("assets", []))
-        debts  = pd.DataFrame(data.get("debts", []))
-
-        # kolon fix
-        for c in ASSET_COLS:
-            if c not in assets.columns:
-                if c == "Kod":
-                    assets[c] = "TRY"
-                elif c in ("Varlık Türü", "Not"):
-                    assets[c] = ""
-                else:
-                    assets[c] = 0.0
-        assets = assets[ASSET_COLS]
-        assets = _normalize_asset_codes(assets)
-
-        for c in DEBT_COLS:
-            if c not in debts.columns:
-                debts[c] = "" if c in ("Borç Adı", "Not") else 0.0
-        debts = debts[DEBT_COLS]
-
-        st.session_state["assets_df"] = assets
-        st.session_state["debts_df"] = debts
-        st.session_state["cashflow_base_date"] = data.get(
-            "cashflow_base_date",
-            st.session_state.get("cashflow_base_date", dt.date.today().isoformat())
-        )
-
-        st.sidebar.success("Bilanço Durumun JSON'dan yüklendi.")
-    else:
-        st.sidebar.warning("JSON bulunamadı / okunamadı.")
-
-    st.session_state["force_reload_state"] = False
-    st.rerun()
-
-if st.session_state.get("force_save_state"):
-    save_state_for_user(username, st.session_state, path=state_path)
-    st.sidebar.success("Bilanço Durumu JSON'a kaydedildi.")
-    st.session_state["force_save_state"] = False
-
-
 st.sidebar.divider()
 
 # =========================
@@ -441,14 +426,7 @@ st.sidebar.divider()
 if "initialized" not in st.session_state:
     data = load_state_for_user(username, path=state_path)
 
-    if data:
-        assets = pd.DataFrame(data.get("assets", []))
-        debts  = pd.DataFrame(data.get("debts", []))
-        st.session_state["cashflow_base_date"] = data.get("cashflow_base_date", dt.date.today().isoformat())
-        st.session_state["baseline_date"] = data.get("baseline_date", BASELINE_DATE)
-        st.session_state["baseline_net"] = data.get("baseline_net", BASELINE_NET)
-        st.session_state["interest_last_date"] = data.get("interest_last_date")
-    else:
+    if not _load_portfolio_state_into_session(data):
         assets = pd.DataFrame([{
             "Varlık Türü": "Mevduat Hesabı",
             "Kod": "TRY",
@@ -468,30 +446,11 @@ if "initialized" not in st.session_state:
         st.session_state["cashflow_base_date"] = today_iso
         st.session_state["interest_last_date"] = today_iso
 
-    # kolonları garanti altına al
-    for c in ASSET_COLS:
-        if c not in assets.columns:
-            if c == "Kod":
-                assets[c] = "TRY"
-            elif c in ("Varlık Türü", "Not"):
-                assets[c] = ""
-            else:
-                assets[c] = 0.0
-    assets = assets[ASSET_COLS]
-    assets = _normalize_asset_codes(assets)
-
-    for c in DEBT_COLS:
-        if c not in debts.columns:
-            debts[c] = "" if c in ("Borç Adı", "Not") else 0.0
-    debts = debts[DEBT_COLS]
-
-    st.session_state["assets_df"] = assets
-    st.session_state["debts_df"]  = debts
+        st.session_state["assets_df"] = _normalize_asset_codes(assets[ASSET_COLS])
+        st.session_state["debts_df"] = debts[DEBT_COLS]
 
     st.session_state.setdefault("prices_snap", PriceSnapshot(prices_try={}, fetched_at=dt.datetime.now(), source="N/A"))
     st.session_state.setdefault("net_history", [])
-    st.session_state.setdefault("force_reload_state", False)
-    st.session_state.setdefault("force_save_state", False)
 
     st.session_state["initialized"] = True
 
@@ -898,27 +857,18 @@ if snap.raw_data:
 
 xlsx_bytes = build_bilanco_xlsx(display_df2, debts_df)
 
-if st.session_state.get("force_save_state"):
-    payload = {
-        "assets": st.session_state["assets_df"].to_dict(orient="records"),
-        "debts": st.session_state["debts_df"].to_dict(orient="records"),
-        "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
-        "net_history": st.session_state.get("net_history", []),
-        "cashflow_base_date": st.session_state.get("cashflow_base_date", "2026-01-28"),
-        "baseline_date": st.session_state.get("baseline_date", BASELINE_DATE),
-        "baseline_net": st.session_state.get("baseline_net", BASELINE_NET),
-        "interest_last_date": st.session_state.get("interest_last_date"),
-    }
-    save_payload_for_user(username, payload, path=state_path)
-    st.sidebar.success("Kaydedildi.")
-    st.session_state["force_save_state"] = False
-
 # Sidebar action buttons (bottom)
 
 if st.sidebar.button("Bilançoyu Kaydet"):
-    st.session_state["force_save_state"] = True
+    save_state_for_user(username, st.session_state, path=state_path)
+    st.sidebar.success("Kaydedildi.")
 if st.sidebar.button("Bilançoyu Yükle"):
-    st.session_state["force_reload_state"] = True
+    data = load_state_for_user(username, path=state_path)
+    if _load_portfolio_state_into_session(data):
+        st.sidebar.success("Yüklendi.")
+        st.rerun()
+    else:
+        st.sidebar.warning("Kayıt bulunamadı veya okunamadı.")
 st.sidebar.download_button(
     "Bilançoyu İndir (Excel)",
     data=xlsx_bytes,

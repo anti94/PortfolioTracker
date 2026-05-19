@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import datetime as dt
+import tempfile
 from typing import Any, Dict, Optional
 
 import streamlit as st
@@ -85,8 +86,33 @@ def load_state(path: str) -> dict:
 
 
 def save_state(path: str, payload: dict) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    fd = None
+    temp_path = None
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f"{os.path.basename(path)}.",
+            suffix=".tmp",
+            dir=directory or None,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        fd = None
+        os.replace(temp_path, path)
     except Exception as e:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         st.error(f"State kaydedilemedi: {e}")

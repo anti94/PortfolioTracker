@@ -60,7 +60,7 @@
   "debts": [
     {
       "Borç Adı": "",
-      "Tutar (TL)": NaN,
+      "Tutar (TL)": 0.0,
       "Not": ""
     }
   ],

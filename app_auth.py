@@ -75,9 +75,12 @@ def verify_user(users_data: Dict[str, Any], username: str, password: str) -> boo
 def get_user_role(users_data: Dict[str, Any], username: str) -> str:
     db = get_db_if_available()
     if db is not None:
-        doc = db["users"].find_one({"username": username}, {"role": 1})
-        role = (doc or {}).get("role", "user")
-        return role if role in ("admin", "user") else "user"
+        try:
+            doc = db["users"].find_one({"username": username}, {"role": 1})
+            role = (doc or {}).get("role", "user")
+            return role if role in ("admin", "user") else "user"
+        except Exception:
+            pass
     user = users_data.get("users", {}).get(username, {})
     role = user.get("role", "user")
     return role if role in ("admin", "user") else "user"

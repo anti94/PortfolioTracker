@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Portfolio Streamlit",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "streamlit",
+        "run",
+        "portfolio_app_fixed.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8501"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -40,10 +40,20 @@ _client = None
 _db = None
 
 
+def _reset_cached_connection() -> None:
+    global _client, _db
+    _client = None
+    _db = None
+
+
 def get_db():
     global _client, _db
     if _db is not None:
-        return _db
+        try:
+            _db.command("ping")
+            return _db
+        except Exception:
+            _reset_cached_connection()
     uri = get_mongo_uri()
     if not uri:
         raise RuntimeError("MongoDB URI not configured")
@@ -65,6 +75,7 @@ def get_db_if_available() -> Optional[Any]:
     try:
         return get_db()
     except Exception:
+        _reset_cached_connection()
         return None
 
 

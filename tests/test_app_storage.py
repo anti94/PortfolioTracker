@@ -36,3 +36,13 @@ def test_save_state_writes_file(tmp_path):
 
     content = json.loads(path.read_text(encoding="utf-8"))
     assert content == payload
+
+
+def test_save_state_creates_parent_directory(tmp_path):
+    path = tmp_path / "nested" / "legacy.json"
+    payload = {"ok": True}
+
+    save_state(str(path), payload)
+
+    assert path.exists()
+    assert json.loads(path.read_text(encoding="utf-8")) == payload

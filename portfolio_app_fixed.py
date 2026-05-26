@@ -487,8 +487,9 @@ if st.sidebar.button("Kurları Güncelle", key="refresh_rates"):
     # Force bypass cache: bump nonce + clear cache + set flag
     st.session_state["prices_nonce"] += 1
     st.session_state["force_refresh_prices"] = True
-    # Reset editor state so Kur (TL) shows new auto values after refresh.
-    st.session_state["editor_refresh_token"] += 1
+    # Not: Editör token'ını burada artırmıyoruz; aksi halde tablo widget'ı
+    # yeniden yaratılıp kullanıcının kaydetmediği düzenlemeleri (ör. Adet) siler.
+    # Kur (TL) zaten her rerun'da compute_display_assets ile taze fiyattan gelir.
     try:
         cached_prices.clear()
     except Exception:
@@ -556,8 +557,10 @@ if price_source_pref == "harem" and not any(
 prices_sig = tuple(sorted((snap.prices_try or {}).items()))
 if st.session_state.get("prices_sig") != prices_sig:
     st.session_state["prices_sig"] = prices_sig
-    # Reset editor state when prices change so Kur (TL) refreshes.
-    st.session_state["editor_refresh_token"] += 1
+    # Not: Fiyat değişince editör token'ını ARTIRMIYORUZ. Token, editör key'ini
+    # değiştirip widget'ı sıfırlıyor ve kullanıcının kaydetmediği Adet/Kur
+    # düzenlemelerini siliyordu (oto yenileme her 60 sn fiyatı değiştirdiği için
+    # düzenleme kaybı yaşanıyordu). Kur (TL) taze fiyattan zaten base data ile gelir.
 
 def _get_update_date_display(snap_: PriceSnapshot) -> str:
     try:

@@ -23,7 +23,13 @@ from app_auth import (
 from app_excel import build_bilanco_xlsx
 from app_net_history import ensure_baseline_net, get_net_for, upsert_net_snapshot
 from app_pricing import PriceSnapshot, fetch_prices
-from app_storage import load_state_for_user, save_state_for_user
+from app_storage import (
+    PERSISTED_STATE_SIG_KEY,
+    load_state_for_user,
+    mark_current_state_saved,
+    save_state_for_user,
+    save_state_for_user_if_changed,
+)
 from app_mongo import mongo_available
 
 
@@ -118,6 +124,7 @@ def _load_portfolio_state_into_session(data: dict | None) -> bool:
         "cashflow_base_date",
         st.session_state.get("cashflow_base_date", dt.date.today().isoformat()),
     )
+    st.session_state["net_history"] = data.get("net_history", st.session_state.get("net_history", []))
     st.session_state["baseline_date"] = data.get("baseline_date", BASELINE_DATE)
     st.session_state["baseline_net"] = data.get("baseline_net", BASELINE_NET)
     st.session_state["interest_last_date"] = data.get("interest_last_date")
@@ -340,6 +347,7 @@ if last_user is None or last_user != username:
         "baseline_net",
         "interest_last_date",
         "initialized",
+        PERSISTED_STATE_SIG_KEY,
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -454,9 +462,12 @@ if "initialized" not in st.session_state:
 
     st.session_state["initialized"] = True
 
+    initial_state_saved = True
     # İlk girişte kullanıcı dosyasını oluştur
     if not mongo_available() and state_path and (not os.path.exists(state_path)):
-        save_state_for_user(username, st.session_state, path=state_path)
+        initial_state_saved = save_state_for_user(username, st.session_state, path=state_path)
+    if initial_state_saved:
+        mark_current_state_saved(st.session_state)
 
 
 st.session_state.setdefault("prices_snap", PriceSnapshot(prices_try={}, fetched_at=dt.datetime.now(), source="N/A"))
@@ -860,11 +871,14 @@ if snap.raw_data:
 
 xlsx_bytes = build_bilanco_xlsx(display_df2, debts_df)
 
+save_state_for_user_if_changed(username, st.session_state, path=state_path)
+
 # Sidebar action buttons (bottom)
 
 if st.sidebar.button("Bilançoyu Kaydet"):
-    save_state_for_user(username, st.session_state, path=state_path)
-    st.sidebar.success("Kaydedildi.")
+    if save_state_for_user(username, st.session_state, path=state_path):
+        mark_current_state_saved(st.session_state)
+        st.sidebar.success("Kaydedildi.")
 if st.sidebar.button("Bilançoyu Yükle"):
     data = load_state_for_user(username, path=state_path)
     if _load_portfolio_state_into_session(data):
@@ -879,6 +893,8 @@ st.sidebar.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 if st.sidebar.button("Çıkış Yap"):
+    if save_state_for_user(username, st.session_state, path=state_path):
+        mark_current_state_saved(st.session_state)
     st.session_state["auth"] = {"logged_in": False, "username": None, "role": "user"}
     st.rerun()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Optional
 
 
@@ -38,12 +39,23 @@ def mongo_enabled() -> bool:
 
 _client = None
 _db = None
+_last_error: Optional[str] = None
 
 
 def _reset_cached_connection() -> None:
     global _client, _db
     _client = None
     _db = None
+
+
+def _mask_credentials(text: str) -> str:
+    # Connection errors can echo the URI back; never surface user:pass.
+    return re.sub(r"://[^:/@\s]+:[^@\s]+@", "://***:***@", str(text))
+
+
+def get_last_error() -> Optional[str]:
+    """Why the last connection attempt failed, or None if it succeeded."""
+    return _last_error
 
 
 def get_db():
@@ -72,9 +84,13 @@ def get_db():
 
 
 def get_db_if_available() -> Optional[Any]:
+    global _last_error
     try:
-        return get_db()
-    except Exception:
+        db = get_db()
+        _last_error = None
+        return db
+    except Exception as exc:
+        _last_error = _mask_credentials(f"{type(exc).__name__}: {exc}")
         _reset_cached_connection()
         return None
 

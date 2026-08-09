@@ -30,7 +30,7 @@ from app_storage import (
     save_state_for_user,
     save_state_for_user_if_changed,
 )
-from app_mongo import mongo_available
+from app_mongo import get_last_error, mongo_available, mongo_enabled
 
 
 # ----------------------------
@@ -365,6 +365,14 @@ else:
 st.sidebar.header("Ayarlar")
 storage_label = "MongoDB" if mongo_available() else state_path
 st.sidebar.text_input("Kayıt konumu", value=storage_label, disabled=True)
+if mongo_enabled() and not mongo_available():
+    # MONGO_URI tanımlı ama bağlanılamıyor: kayıtlar geçici diske gidiyor ve
+    # uygulama yeniden başladığında kaybolur. Sessizce düşmek yerine uyar.
+    st.sidebar.error(
+        "MongoDB'ye bağlanılamıyor — değişiklikler geçici diske yazılıyor ve "
+        "uygulama yeniden başlatıldığında KAYBOLUR.\n\n"
+        f"Sebep: {get_last_error()}"
+    )
 refresh_sec = st.sidebar.number_input("Oto yenileme (sn) — 0 kapalı", min_value=0, max_value=3600, value=60, step=10)
 use_side = "BUY"
 price_source_label = st.sidebar.radio(
